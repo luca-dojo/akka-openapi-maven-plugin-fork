@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-04-20
+
+### Fixed
+- OpenAPI annotation extraction is now wired up end-to-end. The `@OpenAPITag`,
+  `@OpenAPIResponse`, `@OpenAPIInfo`, and `@OpenAPIExample` annotations
+  shipped in 1.0.0 were not actually read during generation; they now
+  populate the generated spec as documented ([#17], [#18]).
+
+### Security
+- Pinned all GitHub Actions to immutable commit SHAs to mitigate supply-chain
+  risk from mutable tags ([#19]).
+
+### CI
+- Granted `checks: write` / `pull-requests: write` permissions to the CI
+  workflow so that test-result publishing no longer fails with a 403 on push
+  to `main`.
+
+## [1.0.0] - 2026-01-25
+
 ### Added
 - Initial release of Akka OpenAPI Maven Plugin
 - OpenAPI 3.1 specification generation from Akka SDK `@HttpEndpoint` annotations
@@ -37,9 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Jackson 2.18.2
 - Java 17+
 
-## [1.0.0] - TBD
-
-Initial public release.
-
-[Unreleased]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/osodevops/akka-openapi-maven-plugin/releases/tag/v1.0.0
+[#17]: https://github.com/osodevops/akka-openapi-maven-plugin/issues/17
+[#18]: https://github.com/osodevops/akka-openapi-maven-plugin/pull/18
+[#19]: https://github.com/osodevops/akka-openapi-maven-plugin/pull/19
