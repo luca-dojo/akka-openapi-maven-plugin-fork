@@ -1,14 +1,13 @@
 name: Release to Maven Central
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [ published ]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 1.0.0). Leave empty to use tag version.'
-        required: false
+        description: 'Release version (e.g., 1.0.2). Required for manual dispatch.'
+        required: true
         type: string
 
 permissions:
@@ -17,8 +16,6 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    # Only run for tag pushes or manual workflow dispatch
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     outputs:
       version: ${{ steps.get-version.outputs.version }}
 
@@ -28,11 +25,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get version from tag or input
+      - name: Get version from release event or input
         id: get-version
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION=${GITHUB_REF_NAME#v}
           else
             VERSION=${{ github.event.inputs.version }}
           fi
@@ -118,58 +115,14 @@ jobs:
             !**/target/*-sources.jar
             !**/target/*-javadoc.jar
 
-  create-release:
-    needs: [ validate, build-and-sign ]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: maven-artifacts
-          path: artifacts/
-
-      - name: Create GitHub Release
+      - name: Attach artifacts to GitHub Release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           tag_name: v${{ needs.validate.outputs.version }}
-          name: Release v${{ needs.validate.outputs.version }}
-          draft: false
-          prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
-          generate_release_notes: true
-          body: |
-            ## Akka OpenAPI Maven Plugin v${{ needs.validate.outputs.version }}
-
-            ### Installation
-
-            Add to your `pom.xml`:
-
-            ```xml
-            <plugin>
-                <groupId>sh.oso</groupId>
-                <artifactId>akka-openapi-maven-plugin</artifactId>
-                <version>${{ needs.validate.outputs.version }}</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>generate</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            ```
-
-            ### Changes
-
-            See [CHANGELOG.md](CHANGELOG.md) for details.
-
-            ---
-            🤖 Generated with GitHub Actions
           files: |
-            artifacts/**/*.jar
+            **/target/*.jar
+            !**/target/original-*.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -198,7 +151,7 @@ jobs:
           echo "</plugin>"
 
   notify:
-    needs: [ validate, create-release ]
+    needs: [ validate, build-and-sign ]
     runs-on: ubuntu-latest
     if: always()
 
