@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-04-29
+
+### Added
+- Support for extracting the inner payload type from Akka / Pekko HTTP wrapper return types (e.g. `HttpResponse<T>`). When an endpoint declares `HttpResponse<CustomerResponse>` the OpenAPI response content will now use `CustomerResponse` as the response schema instead of the HTTP wrapper.
+- New annotation `@OpenAPIResponseSchema(Class<?>)` (in `akka-openapi-annotations`) to explicitly declare the response payload type for methods that return a raw `HttpResponse` with no generic type parameter.
+- Unit tests and integration test coverage for the new HttpResponse unwrapping behaviour and the explicit annotation fallback were added to `akka-openapi-core` and `akka-openapi-example`.
+- Documentation updated (README) to describe the two supported approaches: parameterized `HttpResponse<T>` and the `@OpenAPIResponseSchema` annotation for raw `HttpResponse` returns.
+
 ## [1.0.1] - 2026-04-20
 
 ### Fixed
