@@ -354,4 +354,39 @@ class SchemaGeneratorTest {
 
         assertThat(schema).isInstanceOf(ObjectSchema.class);
     }
+
+    // HttpResponse unwrapping integration tests
+
+    /**
+     * A simple payload DTO used in HttpResponse unwrapping tests.
+     */
+    static class GetCustomerResponse {
+        public String customerId;
+        public String name;
+        public String email;
+    }
+
+    @Test
+    void shouldGenerateSchemaForPayloadTypeExtractedFromHttpResponse() {
+        // When the extractor resolves the inner type (e.g. GetCustomerResponse) from
+        // HttpResponse<GetCustomerResponse>, SchemaGenerator should produce a proper schema.
+        Schema<?> schema = generator.generateSchema(GetCustomerResponse.class);
+
+        assertThat(schema).isNotNull();
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        assertThat(schemas).containsKey("GetCustomerResponse");
+
+        Schema<?> customerSchema = schemas.get("GetCustomerResponse");
+        assertThat(customerSchema.getProperties()).containsKeys("customerId", "name", "email");
+    }
+
+    @Test
+    void shouldGenerateReferenceSchemaForPayloadType() {
+        // First call generates the schema; second call should return a $ref
+        generator.generateSchema(GetCustomerResponse.class);
+        Schema<?> ref = generator.generateSchema(GetCustomerResponse.class);
+
+        assertThat(ref).isNotNull();
+        assertThat(ref.get$ref()).isEqualTo("#/components/schemas/GetCustomerResponse");
+    }
 }

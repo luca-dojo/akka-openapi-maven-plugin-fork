@@ -215,6 +215,50 @@ public class CustomerEndpoint {
 }
 ```
 
+### HttpResponse Wrapping
+
+When an endpoint returns an Akka `HttpResponse` (or uses `HttpResponses.ok(payload)` factory methods),
+the plugin needs to know the actual payload type to document the correct response schema.
+
+**Option 1 – Parameterized return type (preferred):**
+
+```java
+@Get("/{customerId}")
+public HttpResponse<CustomerResponse> getCustomer(String customerId) {
+    return HttpResponses.ok(service.getCustomer(customerId));
+}
+```
+
+The plugin automatically extracts `CustomerResponse` as the response body schema.
+
+**Option 2 – Explicit annotation (for raw `HttpResponse`):**
+
+When the return type is the raw `HttpResponse` type (no generic parameter), annotate the method
+with `@OpenAPIResponseSchema` to declare the payload type:
+
+```java
+@Get("/{customerId}")
+@OpenAPIResponseSchema(CustomerResponse.class)
+public HttpResponse getCustomer(String customerId) {
+    return HttpResponses.ok(service.getCustomer(customerId));
+}
+```
+
+Both approaches produce:
+
+```yaml
+responses:
+  "200":
+    description: Success
+    content:
+      application/json:
+        schema:
+          $ref: "#/components/schemas/CustomerResponse"
+```
+
+> **Note:** If the method returns a raw `HttpResponse` without `@OpenAPIResponseSchema`, the
+> generated response will have no content schema. The plugin logs a warning in this case.
+
 ## Documentation
 
 - [Getting Started](docs/GETTING_STARTED.md)

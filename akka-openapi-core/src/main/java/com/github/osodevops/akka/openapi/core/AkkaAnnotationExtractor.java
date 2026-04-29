@@ -288,7 +288,57 @@ public class AkkaAnnotationExtractor {
     }
 
     /**
+     * Resolves the effective (payload) response type for a method, unwrapping
+     * HTTP wrapper types where possible.
+     *
+     * <p>Priority order:</p>
+     * <ol>
+     *   <li>{@code @OpenAPIResponseSchema} annotation value (explicit declaration)</li>
+     *   <li>Type argument of a parameterized {@code HttpResponse<T>}</li>
+     *   <li>{@code null} when the return type is a raw HTTP wrapper (no content schema)</li>
+     *   <li>The original return type for non-wrapper types</li>
+     * </ol>
+     */
+    private Type resolveEffectiveResponseType(Method method, Type returnType) {
+        // 1. Explicit annotation takes highest priority
+        OpenAPIResponseSchema schemaAnnotation = method.getAnnotation(OpenAPIResponseSchema.class);
+        if (schemaAnnotation != null) {
+            Class<?> declared = schemaAnnotation.value();
+            logger.accept("@OpenAPIResponseSchema found on " + method.getName() + ": " + declared.getSimpleName());
+            return declared;
+        }
+
+        // 2. Parameterized HttpResponse<T> – extract T
+        if (HttpResponseUnwrapper.isHttpResponseType(returnType)) {
+            Type inner = HttpResponseUnwrapper.unwrapParameterizedHttpResponse(returnType);
+            if (inner != null) {
+                logger.accept("Unwrapped parameterized HttpResponse<T> on " + method.getName()
+                    + ": inner type = " + inner.getTypeName());
+                return inner;
+            }
+            // Raw HttpResponse – we cannot determine the payload type without an annotation
+            logger.accept("Raw HttpResponse return type on " + method.getName()
+                + ": consider adding @OpenAPIResponseSchema to specify the payload type");
+            return null;
+        }
+
+        // 3. Not a wrapper type – use as-is
+        return returnType;
+    }
+
+    /**
      * Infers response metadata from method signature.
+     *
+     * <p>When the method return type is an HTTP wrapper (e.g. {@code HttpResponse} or
+     * {@code HttpResponse<T>}) the plugin attempts to resolve the actual payload type
+     * via the following strategy (in order):</p>
+     * <ol>
+     *   <li>If the {@code @OpenAPIResponseSchema} annotation is present on the method,
+     *       use the declared class as the payload type.</li>
+     *   <li>If the return type is a parameterized {@code HttpResponse<T>}, use {@code T}.</li>
+     *   <li>Otherwise (raw {@code HttpResponse}), emit the response without a content schema
+     *       so the spec remains valid and the user is prompted to add the annotation.</li>
+     * </ol>
      */
     private Map<String, ResponseMetadata> inferResponses(Method method, HttpMethod httpMethod) {
         Map<String, ResponseMetadata> responses = new LinkedHashMap<>();
@@ -301,8 +351,13 @@ public class AkkaAnnotationExtractor {
             default -> "200";
         };
 
+        // Resolve the effective response type, unwrapping HTTP wrapper types where possible
+        Type effectiveResponseType = resolveEffectiveResponseType(method, returnType);
+
         // Add success response
-        if (returnType.equals(void.class) || returnType.equals(Void.class)) {
+        if (effectiveResponseType == null ||
+            effectiveResponseType.equals(void.class) ||
+            effectiveResponseType.equals(Void.class)) {
             responses.put(successCode, ResponseMetadata.builder()
                 .statusCode(successCode)
                 .description("Success")
@@ -311,7 +366,7 @@ public class AkkaAnnotationExtractor {
             responses.put(successCode, ResponseMetadata.builder()
                 .statusCode(successCode)
                 .description("Success")
-                .responseType(returnType)
+                .responseType(effectiveResponseType)
                 .build());
         }
 
