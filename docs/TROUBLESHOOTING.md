@@ -236,7 +236,8 @@ The plugin uses Jackson 2.18.x. If you have version conflicts:
 
 ## Akka SDK Version
 
-The plugin is tested with Akka SDK 3.0.2. For other versions:
+The plugin tracks Akka SDK 3.5.17 as the current reference version. For other
+versions:
 
 1. Check annotation package names haven't changed
 2. Verify HTTP annotations are available:

@@ -5,7 +5,6 @@ import io.swagger.v3.oas.models.media.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.time.*;
@@ -354,4 +353,5 @@ class SchemaGeneratorTest {
 
         assertThat(schema).isInstanceOf(ObjectSchema.class);
     }
+
 }
