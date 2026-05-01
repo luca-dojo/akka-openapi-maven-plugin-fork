@@ -22,6 +22,11 @@
             <groupId>sh.oso</groupId>
             <artifactId>akka-openapi-annotations</artifactId>
         </dependency>
+        <dependency>
+            <groupId>sh.oso</groupId>
+            <artifactId>akka-sdk-shim</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- OpenAPI / Swagger -->
         <dependency>

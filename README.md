@@ -215,6 +215,61 @@ public class CustomerEndpoint {
 }
 ```
 
+### Low-Level HttpResponse Return Types
+
+When an endpoint returns a domain object directly, the plugin infers the response
+schema from the method return type:
+
+```java
+@Get("/{customerId}")
+public CustomerResponse getCustomer(String customerId) {
+    return service.getCustomer(customerId);
+}
+```
+
+The same inference works for asynchronous methods such as
+`CompletionStage<CustomerResponse>`.
+
+For low-level Akka responses, endpoint methods return
+`akka.http.javadsl.model.HttpResponse`. That type does not carry the response body
+type in the Java signature, even when the implementation uses
+`HttpResponses.ok(payload)`, so annotate the method with `@OpenAPIResponseSchema`:
+
+```java
+@Get("/{customerId}")
+@OpenAPIResponseSchema(CustomerResponse.class)
+public HttpResponse getCustomer(String customerId) {
+    return HttpResponses.ok(service.getCustomer(customerId));
+}
+```
+
+This also works for asynchronous low-level responses:
+
+```java
+@Get("/{customerId}")
+@OpenAPIResponseSchema(CustomerResponse.class)
+public CompletionStage<HttpResponse> getCustomer(String customerId) {
+    return service.getCustomer(customerId)
+        .thenApply(HttpResponses::ok);
+}
+```
+
+Both low-level examples produce:
+
+```yaml
+responses:
+  "200":
+    description: Success
+    content:
+      application/json:
+        schema:
+          $ref: "#/components/schemas/CustomerResponse"
+```
+
+> **Note:** If a method returns `HttpResponse` or `CompletionStage<HttpResponse>`
+> without `@OpenAPIResponseSchema`, the generated response will have no content
+> schema. The plugin logs a warning in this case.
+
 ## Documentation
 
 - [Getting Started](docs/GETTING_STARTED.md)
@@ -226,7 +281,8 @@ public class CustomerEndpoint {
 
 - Java 17 or later
 - Maven 3.6.3 or later
-- Akka SDK 3.0.0 or later
+- Akka SDK 3.0.0 or later. The repository tracks Akka SDK 3.5.17 as the
+  current reference version.
 
 ## Contributing
 

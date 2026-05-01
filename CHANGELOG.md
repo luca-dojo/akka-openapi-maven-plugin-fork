@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New annotation `@OpenAPIResponseSchema(Class<?>)` to explicitly declare the
+  response payload type for low-level `HttpResponse` and
+  `CompletionStage<HttpResponse>` endpoint methods.
+- Response schema inference now unwraps `CompletionStage<T>` return types before
+  generating OpenAPI response content.
+- Tests and documentation were added for low-level Akka `HttpResponse` handling.
+- The Akka SDK reference version is updated to 3.5.17, the current Akka SDK
+  release listed by the official Akka release notes.
+
 ## [1.0.1] - 2026-04-20
 
 ### Fixed
@@ -48,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Example project demonstrating plugin usage
 
 ### Dependencies
-- Akka SDK 3.0.2
+- Akka SDK 3.5.17
 - Swagger Core 2.2.25
 - Swagger Parser 2.1.22
 - ClassGraph 4.8.182
