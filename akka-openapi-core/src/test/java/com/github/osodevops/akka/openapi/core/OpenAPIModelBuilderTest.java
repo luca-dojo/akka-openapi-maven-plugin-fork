@@ -813,7 +813,7 @@ class OpenAPIModelBuilderTest {
     }
 
     @Test
-    void shouldHandleHttpSecuritySchemeType() {
+    void shouldRejectHttpSecuritySchemeType() {
         config = PluginConfiguration.builder()
             .apiTitle("Test API")
             .apiVersion("1.0.0")
@@ -822,10 +822,59 @@ class OpenAPIModelBuilderTest {
             .build();
 
         builder = new OpenAPIModelBuilder(config, logMessages::add);
-        OpenAPI openAPI = builder.build(List.of());
 
-        SecurityScheme scheme = openAPI.getComponents().getSecuritySchemes().get("BearerAuth");
-        assertThat(scheme.getType()).isEqualTo(SecurityScheme.Type.HTTP);
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("'http'")
+            .hasMessageContaining("not yet supported");
+    }
+
+    @Test
+    void shouldRejectOAuth2SecuritySchemeType() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "OAuth", "oauth2", "header", "Authorization", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("not yet supported");
+    }
+
+    @Test
+    void shouldRejectUnknownSecuritySchemeType() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "Bogus", "bogus", "header", "x-bogus", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Unknown security scheme type 'bogus'");
+    }
+
+    @Test
+    void shouldRejectUnknownSecuritySchemeIn() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "Weird", "apiKey", "body", "x-weird", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Unknown security scheme 'in' value 'body'");
     }
 
     @Test

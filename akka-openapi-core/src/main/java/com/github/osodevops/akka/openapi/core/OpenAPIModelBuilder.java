@@ -559,20 +559,34 @@ public class OpenAPIModelBuilder {
     }
 
     private SecurityScheme.Type mapSecuritySchemeType(String type) {
+        if (type == null) {
+            throw new IllegalArgumentException(
+                "Security scheme type must not be null. Currently supported: apiKey");
+        }
         return switch (type.toLowerCase()) {
             case "apikey" -> SecurityScheme.Type.APIKEY;
-            case "http" -> SecurityScheme.Type.HTTP;
-            case "oauth2" -> SecurityScheme.Type.OAUTH2;
-            case "openidconnect" -> SecurityScheme.Type.OPENIDCONNECT;
-            default -> SecurityScheme.Type.APIKEY;
+            case "http", "oauth2", "openidconnect" -> throw new IllegalArgumentException(
+                "Security scheme type '" + type + "' is not yet supported. " +
+                    "Only 'apiKey' is currently supported. " +
+                    "See https://github.com/osodevops/akka-openapi-maven-plugin/issues for follow-up.");
+            default -> throw new IllegalArgumentException(
+                "Unknown security scheme type '" + type + "'. " +
+                    "Currently supported: apiKey.");
         };
     }
 
     private SecurityScheme.In mapSecuritySchemeIn(String in) {
+        if (in == null) {
+            throw new IllegalArgumentException(
+                "Security scheme 'in' must not be null. Must be one of: header, query, cookie");
+        }
         return switch (in.toLowerCase()) {
+            case "header" -> SecurityScheme.In.HEADER;
             case "query" -> SecurityScheme.In.QUERY;
             case "cookie" -> SecurityScheme.In.COOKIE;
-            default -> SecurityScheme.In.HEADER;
+            default -> throw new IllegalArgumentException(
+                "Unknown security scheme 'in' value '" + in + "'. " +
+                    "Must be one of: header, query, cookie.");
         };
     }
 
