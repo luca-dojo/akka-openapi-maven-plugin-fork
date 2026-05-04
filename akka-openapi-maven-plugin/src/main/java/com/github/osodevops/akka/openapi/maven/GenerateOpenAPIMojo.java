@@ -163,6 +163,15 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
     private List<SecuritySchemeParam> security;
 
     /**
+     * Whether to emit declared {@code <security>} schemes into the generated
+     * spec. When {@code false}, the {@code components.securitySchemes} block
+     * and the top-level {@code security} requirement are both suppressed even
+     * if {@code <security>} entries are configured.
+     */
+    @Parameter(property = "openapi.includeSecuritySchemes", defaultValue = "true")
+    private boolean includeSecuritySchemes;
+
+    /**
      * Whether to skip plugin execution.
      */
     @Parameter(property = "openapi.skip", defaultValue = "false")
@@ -230,6 +239,7 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
             .licenseName(licenseName)
             .licenseUrl(licenseUrl)
             .termsOfService(termsOfService)
+            .includeSecuritySchemes(includeSecuritySchemes)
             .failOnValidationError(failOnValidationError);
 
         if (scanPackages != null && !scanPackages.isEmpty()) {
