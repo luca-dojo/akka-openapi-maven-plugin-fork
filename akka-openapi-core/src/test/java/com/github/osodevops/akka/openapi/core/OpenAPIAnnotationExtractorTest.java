@@ -2,7 +2,8 @@ package com.github.osodevops.akka.openapi.core;
 
 import com.github.osodevops.akka.openapi.annotations.*;
 import com.github.osodevops.akka.openapi.core.fixtures.AnnotatedEndpoint;
-import com.github.osodevops.akka.openapi.core.fixtures.CustomerDto;
+import com.github.osodevops.akka.openapi.core.fixtures.GetCustomerResponse;
+import com.github.osodevops.akka.openapi.core.fixtures.LowLevelHttpResponseEndpoint;
 import com.github.osodevops.akka.openapi.core.fixtures.SimpleEndpoint;
 import com.github.osodevops.akka.openapi.core.model.InfoMetadata;
 import com.github.osodevops.akka.openapi.core.model.ServerMetadata;
@@ -230,5 +231,33 @@ class OpenAPIAnnotationExtractorTest {
 
         assertThat(target).isNotNull();
         assertThat(target.value()).containsExactly(java.lang.annotation.ElementType.METHOD);
+    // @OpenAPIResponseSchema annotation tests
+
+    @Test
+    void shouldReadOpenAPIResponseSchemaAnnotation() throws Exception {
+        Method method = LowLevelHttpResponseEndpoint.class.getMethod("getCustomer", String.class);
+        OpenAPIResponseSchema annotation = method.getAnnotation(OpenAPIResponseSchema.class);
+
+        assertThat(annotation).isNotNull();
+        assertThat(annotation.value()).isEqualTo(GetCustomerResponse.class);
+    }
+
+    @Test
+    void shouldReturnNullWhenNoOpenAPIResponseSchemaAnnotation() throws Exception {
+        Method method = LowLevelHttpResponseEndpoint.class.getMethod("getRawCustomer", String.class);
+        OpenAPIResponseSchema annotation = method.getAnnotation(OpenAPIResponseSchema.class);
+
+        assertThat(annotation).isNull();
+    }
+
+    @Test
+    void shouldHaveRuntimeRetention() throws Exception {
+        // Verify the annotation is retained at runtime so AkkaAnnotationExtractor can read it
+        Method method = LowLevelHttpResponseEndpoint.class.getMethod("getCustomer", String.class);
+        OpenAPIResponseSchema annotation = method.getAnnotation(OpenAPIResponseSchema.class);
+
+        // Simply verifying we can read it at runtime confirms RUNTIME retention
+        assertThat(annotation).isNotNull();
+        assertThat(annotation.value().getSimpleName()).isEqualTo("GetCustomerResponse");
     }
 }

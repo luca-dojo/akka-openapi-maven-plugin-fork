@@ -43,8 +43,13 @@ class AnnotationRetentionTest {
     }
 
     @Test
+<<<<<<< feature/security-config
     void openAPISummaryShouldHaveRuntimeRetention() {
         assertThat(OpenAPISummary.class.getAnnotation(Retention.class).value())
+=======
+    void openAPIResponseSchemaShouldHaveRuntimeRetention() {
+        assertThat(OpenAPIResponseSchema.class.getAnnotation(Retention.class).value())
+>>>>>>> main
             .isEqualTo(RetentionPolicy.RUNTIME);
     }
 }
