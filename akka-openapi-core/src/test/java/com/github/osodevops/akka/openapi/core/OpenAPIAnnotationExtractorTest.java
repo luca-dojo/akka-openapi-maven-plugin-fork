@@ -192,7 +192,50 @@ class OpenAPIAnnotationExtractorTest {
         assertThat(metadata.getDescription()).isEqualTo("Production");
     }
 
+    // ---------------------------------------------------------------------------
+    // @OpenAPISummary tests
+    // ---------------------------------------------------------------------------
+
+    @Test
+    void shouldReadOpenAPISummaryFromMethod() throws Exception {
+        Method method = AnnotatedEndpoint.class.getMethod("listCustomers");
+        OpenAPISummary summary = method.getAnnotation(OpenAPISummary.class);
+
+        assertThat(summary).isNotNull();
+        assertThat(summary.value()).isEqualTo("List all customers");
+    }
+
+    @Test
+    void shouldReadDifferentOpenAPISummaryPerMethod() throws Exception {
+        Method listMethod = AnnotatedEndpoint.class.getMethod("listCustomers");
+        Method getMethod = AnnotatedEndpoint.class.getMethod("getCustomer", String.class);
+
+        assertThat(listMethod.getAnnotation(OpenAPISummary.class).value())
+            .isEqualTo("List all customers");
+        assertThat(getMethod.getAnnotation(OpenAPISummary.class).value())
+            .isEqualTo("Get customer by ID");
+    }
+
+    @Test
+    void shouldReturnNullOpenAPISummaryWhenNotAnnotated() throws Exception {
+        Method method = AnnotatedEndpoint.class.getMethod("deleteCustomer", String.class);
+        OpenAPISummary summary = method.getAnnotation(OpenAPISummary.class);
+
+        assertThat(summary).isNull();
+    }
+
+    @Test
+    void openAPISummaryShouldTargetMethodOnly() {
+        java.lang.annotation.Target target =
+            OpenAPISummary.class.getAnnotation(java.lang.annotation.Target.class);
+
+        assertThat(target).isNotNull();
+        assertThat(target.value()).containsExactly(java.lang.annotation.ElementType.METHOD);
+    }
+
+    // ---------------------------------------------------------------------------
     // @OpenAPIResponseSchema annotation tests
+    // ---------------------------------------------------------------------------
 
     @Test
     void shouldReadOpenAPIResponseSchemaAnnotation() throws Exception {

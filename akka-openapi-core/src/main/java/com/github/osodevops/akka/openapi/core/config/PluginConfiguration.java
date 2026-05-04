@@ -27,6 +27,7 @@ public class PluginConfiguration {
     private final boolean generateResponseSchemas;
     private final boolean includeSecuritySchemes;
     private final boolean failOnValidationError;
+    private final List<SecuritySchemeConfig> securitySchemes;
 
     private PluginConfiguration(Builder builder) {
         this.apiTitle = builder.apiTitle;
@@ -44,6 +45,7 @@ public class PluginConfiguration {
         this.generateResponseSchemas = builder.generateResponseSchemas;
         this.includeSecuritySchemes = builder.includeSecuritySchemes;
         this.failOnValidationError = builder.failOnValidationError;
+        this.securitySchemes = Collections.unmodifiableList(new ArrayList<>(builder.securitySchemes));
     }
 
     public static Builder builder() {
@@ -110,6 +112,10 @@ public class PluginConfiguration {
         return failOnValidationError;
     }
 
+    public List<SecuritySchemeConfig> getSecuritySchemes() {
+        return securitySchemes;
+    }
+
     public static class Builder {
         private String apiTitle = "API";
         private String apiVersion = "1.0.0";
@@ -126,6 +132,7 @@ public class PluginConfiguration {
         private boolean generateResponseSchemas = true;
         private boolean includeSecuritySchemes = true;
         private boolean failOnValidationError = true;
+        private List<SecuritySchemeConfig> securitySchemes = new ArrayList<>();
 
         public Builder apiTitle(String apiTitle) {
             this.apiTitle = Objects.requireNonNull(apiTitle, "apiTitle must not be null");
@@ -209,6 +216,16 @@ public class PluginConfiguration {
 
         public Builder failOnValidationError(boolean failOnValidationError) {
             this.failOnValidationError = failOnValidationError;
+            return this;
+        }
+
+        public Builder securitySchemes(List<SecuritySchemeConfig> securitySchemes) {
+            this.securitySchemes = securitySchemes != null ? securitySchemes : new ArrayList<>();
+            return this;
+        }
+
+        public Builder addSecurityScheme(SecuritySchemeConfig securityScheme) {
+            this.securitySchemes.add(securityScheme);
             return this;
         }
 

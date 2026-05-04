@@ -25,6 +25,7 @@ class PluginConfigurationTest {
         assertThat(config.isGenerateResponseSchemas()).isTrue();
         assertThat(config.isIncludeSecuritySchemes()).isTrue();
         assertThat(config.isFailOnValidationError()).isTrue();
+        assertThat(config.getSecuritySchemes()).isEmpty();
     }
 
     @Test
@@ -98,5 +99,64 @@ class PluginConfigurationTest {
 
         assertThatThrownBy(() -> config.getScanPackages().add("com.other"))
             .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldBuildWithSecuritySchemes() {
+        SecuritySchemeConfig scheme1 = new SecuritySchemeConfig(
+            "CustomAuthHeader", "apiKey", "header", "x-custom-auth", "Custom authentication header");
+        SecuritySchemeConfig scheme2 = new SecuritySchemeConfig(
+            "SecondaryAuthHeader", "apiKey", "header", "x-secondary-auth", "Secondary authentication header");
+
+        PluginConfiguration config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(scheme1)
+            .addSecurityScheme(scheme2)
+            .build();
+
+        assertThat(config.getSecuritySchemes()).hasSize(2);
+        assertThat(config.getSecuritySchemes().get(0).getSchemeName()).isEqualTo("CustomAuthHeader");
+        assertThat(config.getSecuritySchemes().get(0).getType()).isEqualTo("apiKey");
+        assertThat(config.getSecuritySchemes().get(0).getIn()).isEqualTo("header");
+        assertThat(config.getSecuritySchemes().get(0).getName()).isEqualTo("x-custom-auth");
+        assertThat(config.getSecuritySchemes().get(0).getDescription()).isEqualTo("Custom authentication header");
+        assertThat(config.getSecuritySchemes().get(1).getSchemeName()).isEqualTo("SecondaryAuthHeader");
+    }
+
+    @Test
+    void shouldBuildWithSecuritySchemesUsingBulkSetter() {
+        SecuritySchemeConfig scheme = new SecuritySchemeConfig(
+            "ApiKey", "apiKey", "header", "x-api-key", null);
+
+        PluginConfiguration config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .securitySchemes(List.of(scheme))
+            .build();
+
+        assertThat(config.getSecuritySchemes()).hasSize(1);
+        assertThat(config.getSecuritySchemes().get(0).getSchemeName()).isEqualTo("ApiKey");
+    }
+
+    @Test
+    void securitySchemesListShouldBeImmutable() {
+        PluginConfiguration config = PluginConfiguration.builder()
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "ApiKey", "apiKey", "header", "x-api-key", null))
+            .build();
+
+        assertThatThrownBy(() -> config.getSecuritySchemes().add(
+            new SecuritySchemeConfig("Other", "apiKey", "header", "x-other", null)))
+            .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldHandleNullSecuritySchemesList() {
+        PluginConfiguration config = PluginConfiguration.builder()
+            .securitySchemes(null)
+            .build();
+
+        assertThat(config.getSecuritySchemes()).isEmpty();
     }
 }

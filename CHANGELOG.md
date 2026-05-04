@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests and documentation were added for low-level Akka `HttpResponse` handling.
 - The Akka SDK reference version is updated to 3.5.17, the current Akka SDK
   release listed by the official Akka release notes.
+- New annotation `@OpenAPISummary("...")` maps to the OpenAPI `summary` field
+  on an operation. Use it to give operations a short, single-line label that
+  appears in tools such as Swagger UI.
+- New `<security>` configuration block on the Maven plugin lets users declare
+  apiKey-based security schemes (header, query, or cookie). The plugin emits
+  them under `components.securitySchemes` and adds matching top-level
+  `security` requirements. The existing `<includeSecuritySchemes>` flag is now
+  honoured to suppress emission without removing config.
+
+### Changed
+- Misconfigured `<security>` blocks now fail fast with an actionable
+  `MojoExecutionException` instead of producing spec-invalid YAML. Currently
+  only `type: apiKey` is supported; `http`, `oauth2`, and `openIdConnect` are
+  rejected with a clear error pending a follow-up.
 
 ## [1.0.1] - 2026-04-20
 

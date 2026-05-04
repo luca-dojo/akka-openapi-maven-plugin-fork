@@ -2,6 +2,7 @@ package com.github.osodevops.akka.openapi.maven;
 
 import com.github.osodevops.akka.openapi.core.*;
 import com.github.osodevops.akka.openapi.core.config.PluginConfiguration;
+import com.github.osodevops.akka.openapi.core.config.SecuritySchemeConfig;
 import com.github.osodevops.akka.openapi.core.config.ServerConfig;
 import com.github.osodevops.akka.openapi.core.exception.ScanningException;
 import com.github.osodevops.akka.openapi.core.model.EndpointMetadata;
@@ -144,6 +145,33 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
     private List<ServerConfigParam> servers;
 
     /**
+     * Security scheme configurations for the OpenAPI spec.
+     *
+     * <p>Example configuration:</p>
+     * <pre>{@code
+     * <security>
+     *   <securityScheme>
+     *     <schemeName>CustomAuthHeader</schemeName>
+     *     <type>apiKey</type>
+     *     <in>header</in>
+     *     <name>x-custom-auth</name>
+     *   </securityScheme>
+     * </security>
+     * }</pre>
+     */
+    @Parameter
+    private List<SecuritySchemeParam> security;
+
+    /**
+     * Whether to emit declared {@code <security>} schemes into the generated
+     * spec. When {@code false}, the {@code components.securitySchemes} block
+     * and the top-level {@code security} requirement are both suppressed even
+     * if {@code <security>} entries are configured.
+     */
+    @Parameter(property = "openapi.includeSecuritySchemes", defaultValue = "true")
+    private boolean includeSecuritySchemes;
+
+    /**
      * Whether to skip plugin execution.
      */
     @Parameter(property = "openapi.skip", defaultValue = "false")
@@ -200,7 +228,7 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
         }
     }
 
-    private PluginConfiguration buildConfiguration() {
+    private PluginConfiguration buildConfiguration() throws MojoExecutionException {
         PluginConfiguration.Builder builder = PluginConfiguration.builder()
             .apiTitle(apiTitle != null ? apiTitle : "API")
             .apiVersion(apiVersion != null ? apiVersion : "1.0.0")
@@ -211,6 +239,7 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
             .licenseName(licenseName)
             .licenseUrl(licenseUrl)
             .termsOfService(termsOfService)
+            .includeSecuritySchemes(includeSecuritySchemes)
             .failOnValidationError(failOnValidationError);
 
         if (scanPackages != null && !scanPackages.isEmpty()) {
@@ -223,7 +252,45 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
             }
         }
 
+        if (security != null) {
+            for (int i = 0; i < security.size(); i++) {
+                SecuritySchemeParam scheme = security.get(i);
+                validateSecurityScheme(scheme, i);
+                builder.addSecurityScheme(new SecuritySchemeConfig(
+                    scheme.schemeName, scheme.type, scheme.in, scheme.name, scheme.description));
+            }
+        }
+
         return builder.build();
+    }
+
+    static void validateSecurityScheme(SecuritySchemeParam scheme, int index)
+            throws MojoExecutionException {
+        if (scheme.schemeName == null || scheme.schemeName.isBlank()) {
+            throw new MojoExecutionException(
+                "<security><securityScheme> at index " + index +
+                    " is missing required <schemeName>");
+        }
+        if (scheme.name == null || scheme.name.isBlank()) {
+            throw new MojoExecutionException(
+                "<securityScheme schemeName=\"" + scheme.schemeName +
+                    "\"> is missing required <name> (the header/query/cookie key, e.g. x-custom-auth)");
+        }
+        if (scheme.type != null && !"apiKey".equalsIgnoreCase(scheme.type)) {
+            throw new MojoExecutionException(
+                "<securityScheme schemeName=\"" + scheme.schemeName +
+                    "\"> has unsupported <type>" + scheme.type + "</type>. " +
+                    "Only 'apiKey' is currently supported.");
+        }
+        if (scheme.in != null
+                && !"header".equalsIgnoreCase(scheme.in)
+                && !"query".equalsIgnoreCase(scheme.in)
+                && !"cookie".equalsIgnoreCase(scheme.in)) {
+            throw new MojoExecutionException(
+                "<securityScheme schemeName=\"" + scheme.schemeName +
+                    "\"> has invalid <in>" + scheme.in + "</in>. " +
+                    "Must be one of: header, query, cookie.");
+        }
     }
 
     private ClassLoader createProjectClassLoader() throws MojoExecutionException {
@@ -375,6 +442,10 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
         this.servers = servers;
     }
 
+    public void setSecurity(List<SecuritySchemeParam> security) {
+        this.security = security;
+    }
+
     /**
      * Server configuration parameter for Maven plugin configuration.
      */
@@ -391,6 +462,79 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
 
         public void setUrl(String url) {
             this.url = url;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+    }
+
+    /**
+     * Security scheme configuration parameter for Maven plugin configuration.
+     *
+     * <p>Used within the {@code <security>} configuration block:</p>
+     * <pre>{@code
+     * <security>
+     *   <securityScheme>
+     *     <schemeName>CustomAuthHeader</schemeName>
+     *     <type>apiKey</type>
+     *     <in>header</in>
+     *     <name>x-custom-auth</name>
+     *     <description>Custom authentication header</description>
+     *   </securityScheme>
+     * </security>
+     * }</pre>
+     */
+    public static class SecuritySchemeParam {
+        @Parameter
+        private String schemeName;
+
+        @Parameter
+        private String type = "apiKey";
+
+        @Parameter
+        private String in = "header";
+
+        @Parameter
+        private String name;
+
+        @Parameter
+        private String description;
+
+        public String getSchemeName() {
+            return schemeName;
+        }
+
+        public void setSchemeName(String schemeName) {
+            this.schemeName = schemeName;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getIn() {
+            return in;
+        }
+
+        public void setIn(String in) {
+            this.in = in;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
         }
 
         public String getDescription() {

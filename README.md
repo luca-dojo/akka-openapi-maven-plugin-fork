@@ -177,6 +177,17 @@ components:
             </server>
         </servers>
 
+        <!-- Security schemes (apiKey only; see Security Schemes section below) -->
+        <security>
+            <securityScheme>
+                <schemeName>CustomAuthHeader</schemeName>
+                <type>apiKey</type>
+                <in>header</in>
+                <name>x-custom-auth</name>
+                <description>Custom authentication header</description>
+            </securityScheme>
+        </security>
+
         <!-- Validation -->
         <failOnValidationError>true</failOnValidationError>
 
@@ -185,6 +196,47 @@ components:
     </configuration>
 </plugin>
 ```
+
+### Security Schemes
+
+Declare apiKey-based security schemes via the `<security>` block. Each entry
+becomes both a `components.securitySchemes` entry and a top-level `security`
+requirement, applied to every operation:
+
+```xml
+<security>
+    <securityScheme>
+        <schemeName>CustomAuthHeader</schemeName>
+        <type>apiKey</type>
+        <in>header</in>            <!-- header | query | cookie -->
+        <name>x-custom-auth</name> <!-- the header / query / cookie key -->
+        <description>Optional human-readable description</description>
+    </securityScheme>
+</security>
+```
+
+Generates:
+
+```yaml
+security:
+- CustomAuthHeader: []
+components:
+  securitySchemes:
+    CustomAuthHeader:
+      type: apiKey
+      description: Optional human-readable description
+      name: x-custom-auth
+      in: header
+```
+
+Notes:
+- Only `type: apiKey` is supported today. `http`, `oauth2`, and
+  `openIdConnect` are rejected with a clear error and tracked for follow-up.
+- Multiple `<securityScheme>` entries become separate items in the top-level
+  `security` array. In OpenAPI semantics that is an OR (any one is
+  sufficient), not an AND.
+- Set `<includeSecuritySchemes>false</includeSecuritySchemes>` to suppress
+  emission without removing the `<security>` block.
 
 ## Supported Akka SDK Annotations
 
@@ -207,6 +259,7 @@ For additional control, use the optional custom annotations:
 public class CustomerEndpoint {
 
     @Get("/{id}")
+    @OpenAPISummary("Get customer by ID")
     @OpenAPIResponse(status = "200", description = "Customer found")
     @OpenAPIResponse(status = "404", description = "Customer not found")
     public Customer getCustomer(String id) {
@@ -214,6 +267,9 @@ public class CustomerEndpoint {
     }
 }
 ```
+
+`@OpenAPISummary("...")` populates the operation's `summary` field — a short,
+single-line label shown in tools like Swagger UI.
 
 ### Low-Level HttpResponse Return Types
 

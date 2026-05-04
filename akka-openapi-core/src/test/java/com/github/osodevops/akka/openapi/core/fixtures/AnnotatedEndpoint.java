@@ -29,12 +29,14 @@ import java.util.List;
 public class AnnotatedEndpoint {
 
     @MockGet
+    @OpenAPISummary("List all customers")
     @OpenAPIResponse(status = "200", description = "Successfully retrieved customer list")
     public List<CustomerDto> listCustomers() {
         return List.of();
     }
 
     @MockGet("/{id}")
+    @OpenAPISummary("Get customer by ID")
     @OpenAPIResponse(status = "200", description = "Customer found")
     @OpenAPIResponse(status = "404", description = "Customer not found")
     public CustomerDto getCustomer(String id) {

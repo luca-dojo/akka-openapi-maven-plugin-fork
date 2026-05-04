@@ -1,6 +1,7 @@
 package com.github.osodevops.akka.openapi.core;
 
 import com.github.osodevops.akka.openapi.core.config.PluginConfiguration;
+import com.github.osodevops.akka.openapi.core.config.SecuritySchemeConfig;
 import com.github.osodevops.akka.openapi.core.config.ServerConfig;
 import com.github.osodevops.akka.openapi.core.fixtures.CustomerDto;
 import com.github.osodevops.akka.openapi.core.fixtures.CreateCustomerRequest;
@@ -13,6 +14,8 @@ import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.Schema;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -709,5 +712,239 @@ class OpenAPIModelBuilderTest {
 
         assertThat(openAPI).isNotNull();
         assertThat(openAPI.getOpenapi()).isEqualTo("3.1.0");
+    }
+
+    @Test
+    void shouldAddSecuritySchemesToComponents() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "CustomAuthHeader", "apiKey", "header", "x-custom-auth", "Custom authentication header"))
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "SecondaryAuthHeader", "apiKey", "header", "x-secondary-auth", "Secondary authentication header"))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        assertThat(openAPI.getComponents()).isNotNull();
+        assertThat(openAPI.getComponents().getSecuritySchemes()).isNotNull();
+        assertThat(openAPI.getComponents().getSecuritySchemes()).hasSize(2);
+
+        SecurityScheme primaryScheme = openAPI.getComponents().getSecuritySchemes().get("CustomAuthHeader");
+        assertThat(primaryScheme).isNotNull();
+        assertThat(primaryScheme.getType()).isEqualTo(SecurityScheme.Type.APIKEY);
+        assertThat(primaryScheme.getIn()).isEqualTo(SecurityScheme.In.HEADER);
+        assertThat(primaryScheme.getName()).isEqualTo("x-custom-auth");
+        assertThat(primaryScheme.getDescription()).isEqualTo("Custom authentication header");
+
+        SecurityScheme secondaryScheme = openAPI.getComponents().getSecuritySchemes().get("SecondaryAuthHeader");
+        assertThat(secondaryScheme).isNotNull();
+        assertThat(secondaryScheme.getType()).isEqualTo(SecurityScheme.Type.APIKEY);
+        assertThat(secondaryScheme.getIn()).isEqualTo(SecurityScheme.In.HEADER);
+        assertThat(secondaryScheme.getName()).isEqualTo("x-secondary-auth");
+        assertThat(secondaryScheme.getDescription()).isEqualTo("Secondary authentication header");
+    }
+
+    @Test
+    void shouldAddTopLevelSecurityRequirements() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "CustomAuthHeader", "apiKey", "header", "x-custom-auth", null))
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "SecondaryAuthHeader", "apiKey", "header", "x-secondary-auth", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        assertThat(openAPI.getSecurity()).isNotNull();
+        assertThat(openAPI.getSecurity()).hasSize(2);
+
+        SecurityRequirement req1 = openAPI.getSecurity().get(0);
+        assertThat(req1).containsKey("CustomAuthHeader");
+        assertThat(req1.get("CustomAuthHeader")).isEmpty();
+
+        SecurityRequirement req2 = openAPI.getSecurity().get(1);
+        assertThat(req2).containsKey("SecondaryAuthHeader");
+        assertThat(req2.get("SecondaryAuthHeader")).isEmpty();
+    }
+
+    @Test
+    void shouldNotAddSecurityWhenNoSchemesConfigured() {
+        OpenAPI openAPI = builder.build(List.of());
+
+        assertThat(openAPI.getSecurity()).isNull();
+    }
+
+    @Test
+    void shouldHandleSecuritySchemeWithQueryIn() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "ApiKeyQuery", "apiKey", "query", "api_key", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        SecurityScheme scheme = openAPI.getComponents().getSecuritySchemes().get("ApiKeyQuery");
+        assertThat(scheme.getIn()).isEqualTo(SecurityScheme.In.QUERY);
+    }
+
+    @Test
+    void shouldHandleSecuritySchemeWithCookieIn() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "SessionCookie", "apiKey", "cookie", "session_id", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        SecurityScheme scheme = openAPI.getComponents().getSecuritySchemes().get("SessionCookie");
+        assertThat(scheme.getIn()).isEqualTo(SecurityScheme.In.COOKIE);
+    }
+
+    @Test
+    void shouldRejectHttpSecuritySchemeType() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "BearerAuth", "http", "header", "Authorization", "Bearer token authentication"))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("'http'")
+            .hasMessageContaining("not yet supported");
+    }
+
+    @Test
+    void shouldRejectOAuth2SecuritySchemeType() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "OAuth", "oauth2", "header", "Authorization", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("not yet supported");
+    }
+
+    @Test
+    void shouldRejectUnknownSecuritySchemeType() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "Bogus", "bogus", "header", "x-bogus", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Unknown security scheme type 'bogus'");
+    }
+
+    @Test
+    void shouldRejectUnknownSecuritySchemeIn() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "Weird", "apiKey", "body", "x-weird", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        assertThatThrownBy(() -> builder.build(List.of()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Unknown security scheme 'in' value 'body'");
+    }
+
+    @Test
+    void shouldCombineSecuritySchemesWithEndpointSchemas() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "ApiKey", "apiKey", "header", "x-api-key", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("CustomerEndpoint")
+            .basePath("/customers")
+            .addOperation(OperationMetadata.builder()
+                .methodName("getCustomer")
+                .httpMethod(HttpMethod.GET)
+                .path("/{id}")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .responseType(CustomerDto.class)
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        // Should have both schemas and security schemes in components
+        assertThat(openAPI.getComponents().getSchemas()).isNotNull();
+        assertThat(openAPI.getComponents().getSchemas()).containsKey("CustomerDto");
+        assertThat(openAPI.getComponents().getSecuritySchemes()).isNotNull();
+        assertThat(openAPI.getComponents().getSecuritySchemes()).containsKey("ApiKey");
+        assertThat(openAPI.getSecurity()).hasSize(1);
+    }
+
+    @Test
+    void shouldOmitDescriptionWhenNull() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "ApiKey", "apiKey", "header", "x-api-key", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        SecurityScheme scheme = openAPI.getComponents().getSecuritySchemes().get("ApiKey");
+        assertThat(scheme.getDescription()).isNull();
+    }
+
+    @Test
+    void shouldNotEmitSecurityWhenIncludeFlagIsFalse() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .includeSecuritySchemes(false)
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "ApiKey", "apiKey", "header", "x-api-key", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        assertThat(openAPI.getSecurity()).isNull();
+        if (openAPI.getComponents() != null) {
+            assertThat(openAPI.getComponents().getSecuritySchemes()).isNull();
+        }
     }
 }

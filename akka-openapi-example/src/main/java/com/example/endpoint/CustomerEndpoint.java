@@ -8,6 +8,7 @@ import akka.javasdk.annotations.http.Post;
 import akka.javasdk.annotations.http.Put;
 import com.example.dto.*;
 import com.github.osodevops.akka.openapi.annotations.OpenAPIResponse;
+import com.github.osodevops.akka.openapi.annotations.OpenAPISummary;
 import com.github.osodevops.akka.openapi.annotations.OpenAPITag;
 
 import java.util.List;
@@ -42,6 +43,7 @@ public class CustomerEndpoint {
      * @return a paginated response containing customers
      */
     @Get
+    @OpenAPISummary("List all customers")
     @OpenAPIResponse(status = "200", description = "Successfully retrieved customer list")
     public PagedResponse<Customer> listCustomers(Integer page, Integer size, CustomerStatus status) {
         // Implementation would go here
@@ -58,6 +60,7 @@ public class CustomerEndpoint {
      * @return the customer details
      */
     @Get("/{id}")
+    @OpenAPISummary("Get customer by ID")
     @OpenAPIResponse(status = "200", description = "Customer found")
     @OpenAPIResponse(status = "404", description = "Customer not found", responseType = ErrorResponse.class)
     public Customer getCustomer(String id) {
@@ -75,6 +78,7 @@ public class CustomerEndpoint {
      * @return the created customer with assigned ID
      */
     @Post
+    @OpenAPISummary("Create a new customer")
     @OpenAPIResponse(status = "201", description = "Customer created successfully")
     @OpenAPIResponse(status = "400", description = "Invalid request data", responseType = ErrorResponse.class)
     @OpenAPIResponse(status = "409", description = "Customer with this email already exists", responseType = ErrorResponse.class)
@@ -130,6 +134,7 @@ public class CustomerEndpoint {
      * @param id the customer ID to delete
      */
     @Delete("/{id}")
+    @OpenAPISummary("Delete a customer")
     @OpenAPIResponse(status = "204", description = "Customer deleted successfully")
     @OpenAPIResponse(status = "404", description = "Customer not found", responseType = ErrorResponse.class)
     @OpenAPIResponse(status = "409", description = "Customer has active orders and cannot be deleted", responseType = ErrorResponse.class)
