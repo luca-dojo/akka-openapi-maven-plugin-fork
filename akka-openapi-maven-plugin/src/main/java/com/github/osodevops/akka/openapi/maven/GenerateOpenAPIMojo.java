@@ -219,7 +219,7 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
         }
     }
 
-    private PluginConfiguration buildConfiguration() {
+    private PluginConfiguration buildConfiguration() throws MojoExecutionException {
         PluginConfiguration.Builder builder = PluginConfiguration.builder()
             .apiTitle(apiTitle != null ? apiTitle : "API")
             .apiVersion(apiVersion != null ? apiVersion : "1.0.0")
@@ -243,13 +243,44 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
         }
 
         if (security != null) {
-            for (SecuritySchemeParam scheme : security) {
+            for (int i = 0; i < security.size(); i++) {
+                SecuritySchemeParam scheme = security.get(i);
+                validateSecurityScheme(scheme, i);
                 builder.addSecurityScheme(new SecuritySchemeConfig(
                     scheme.schemeName, scheme.type, scheme.in, scheme.name, scheme.description));
             }
         }
 
         return builder.build();
+    }
+
+    static void validateSecurityScheme(SecuritySchemeParam scheme, int index)
+            throws MojoExecutionException {
+        if (scheme.schemeName == null || scheme.schemeName.isBlank()) {
+            throw new MojoExecutionException(
+                "<security><securityScheme> at index " + index +
+                    " is missing required <schemeName>");
+        }
+        if (scheme.name == null || scheme.name.isBlank()) {
+            throw new MojoExecutionException(
+                "<securityScheme schemeName=\"" + scheme.schemeName +
+                    "\"> is missing required <name> (the header/query/cookie key, e.g. x-custom-auth)");
+        }
+        if (scheme.type != null && !"apiKey".equalsIgnoreCase(scheme.type)) {
+            throw new MojoExecutionException(
+                "<securityScheme schemeName=\"" + scheme.schemeName +
+                    "\"> has unsupported <type>" + scheme.type + "</type>. " +
+                    "Only 'apiKey' is currently supported.");
+        }
+        if (scheme.in != null
+                && !"header".equalsIgnoreCase(scheme.in)
+                && !"query".equalsIgnoreCase(scheme.in)
+                && !"cookie".equalsIgnoreCase(scheme.in)) {
+            throw new MojoExecutionException(
+                "<securityScheme schemeName=\"" + scheme.schemeName +
+                    "\"> has invalid <in>" + scheme.in + "</in>. " +
+                    "Must be one of: header, query, cookie.");
+        }
     }
 
     private ClassLoader createProjectClassLoader() throws MojoExecutionException {

@@ -1,5 +1,6 @@
 package com.github.osodevops.akka.openapi.maven;
 
+import org.apache.maven.plugin.MojoExecutionException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -7,6 +8,8 @@ import java.io.File;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Tests for GenerateOpenAPIMojo.
@@ -135,5 +138,77 @@ class GenerateOpenAPIMojoTest {
 
         assertThat(scheme.getType()).isEqualTo("apiKey");
         assertThat(scheme.getIn()).isEqualTo("header");
+    }
+
+    @Test
+    void shouldRejectMissingSchemeName() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme.setName("x-custom-auth");
+
+        assertThatThrownBy(() -> GenerateOpenAPIMojo.validateSecurityScheme(scheme, 0))
+            .isInstanceOf(MojoExecutionException.class)
+            .hasMessageContaining("<schemeName>")
+            .hasMessageContaining("index 0");
+    }
+
+    @Test
+    void shouldRejectBlankSchemeName() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme.setSchemeName("   ");
+        scheme.setName("x-custom-auth");
+
+        assertThatThrownBy(() -> GenerateOpenAPIMojo.validateSecurityScheme(scheme, 2))
+            .isInstanceOf(MojoExecutionException.class)
+            .hasMessageContaining("index 2");
+    }
+
+    @Test
+    void shouldRejectMissingName() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme.setSchemeName("CustomAuth");
+
+        assertThatThrownBy(() -> GenerateOpenAPIMojo.validateSecurityScheme(scheme, 0))
+            .isInstanceOf(MojoExecutionException.class)
+            .hasMessageContaining("CustomAuth")
+            .hasMessageContaining("<name>");
+    }
+
+    @Test
+    void shouldRejectUnsupportedType() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme.setSchemeName("BearerAuth");
+        scheme.setType("http");
+        scheme.setName("Authorization");
+
+        assertThatThrownBy(() -> GenerateOpenAPIMojo.validateSecurityScheme(scheme, 0))
+            .isInstanceOf(MojoExecutionException.class)
+            .hasMessageContaining("BearerAuth")
+            .hasMessageContaining("http")
+            .hasMessageContaining("Only 'apiKey'");
+    }
+
+    @Test
+    void shouldRejectInvalidIn() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme.setSchemeName("WeirdAuth");
+        scheme.setIn("body");
+        scheme.setName("x-weird");
+
+        assertThatThrownBy(() -> GenerateOpenAPIMojo.validateSecurityScheme(scheme, 0))
+            .isInstanceOf(MojoExecutionException.class)
+            .hasMessageContaining("body")
+            .hasMessageContaining("header, query, cookie");
+    }
+
+    @Test
+    void shouldAcceptValidApiKeyConfiguration() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme.setSchemeName("CustomAuthHeader");
+        scheme.setType("apiKey");
+        scheme.setIn("header");
+        scheme.setName("x-custom-auth");
+
+        assertThatCode(() -> GenerateOpenAPIMojo.validateSecurityScheme(scheme, 0))
+            .doesNotThrowAnyException();
     }
 }
