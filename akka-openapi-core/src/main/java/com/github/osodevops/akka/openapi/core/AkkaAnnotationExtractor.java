@@ -258,12 +258,20 @@ public class AkkaAnnotationExtractor {
         // Generate operation ID
         String operationId = method.getName();
 
+        // Extract @OpenAPISummary (explicit per-method summary)
+        String summary = "";
+        OpenAPISummary summaryAnnotation = method.getAnnotation(OpenAPISummary.class);
+        if (summaryAnnotation != null) {
+            summary = summaryAnnotation.value();
+            logger.accept("Found @OpenAPISummary on " + method.getName() + ": " + summary);
+        }
+
         return OperationMetadata.builder()
             .methodName(method.getName())
             .httpMethod(httpMethod)
             .path(operationPath)
             .operationId(operationId)
-            .summary("")
+            .summary(summary)
             .description("")
             .parameters(parameters)
             .requestBody(requestBody)

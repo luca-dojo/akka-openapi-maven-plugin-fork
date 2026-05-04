@@ -41,4 +41,10 @@ class AnnotationRetentionTest {
         assertThat(OpenAPIServer.class.getAnnotation(Retention.class).value())
             .isEqualTo(RetentionPolicy.RUNTIME);
     }
+
+    @Test
+    void openAPISummaryShouldHaveRuntimeRetention() {
+        assertThat(OpenAPISummary.class.getAnnotation(Retention.class).value())
+            .isEqualTo(RetentionPolicy.RUNTIME);
+    }
 }
