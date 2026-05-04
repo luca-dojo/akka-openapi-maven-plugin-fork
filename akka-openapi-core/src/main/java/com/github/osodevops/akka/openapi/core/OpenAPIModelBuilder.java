@@ -134,7 +134,9 @@ public class OpenAPIModelBuilder {
 
         // Build security schemes from configuration
         List<SecuritySchemeConfig> securitySchemeConfigs = config.getSecuritySchemes();
-        if (securitySchemeConfigs != null && !securitySchemeConfigs.isEmpty()) {
+        if (config.isIncludeSecuritySchemes()
+                && securitySchemeConfigs != null
+                && !securitySchemeConfigs.isEmpty()) {
             Components components = openAPI.getComponents();
             if (components == null) {
                 components = new Components();

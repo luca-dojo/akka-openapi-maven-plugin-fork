@@ -928,4 +928,23 @@ class OpenAPIModelBuilderTest {
         SecurityScheme scheme = openAPI.getComponents().getSecuritySchemes().get("ApiKey");
         assertThat(scheme.getDescription()).isNull();
     }
+
+    @Test
+    void shouldNotEmitSecurityWhenIncludeFlagIsFalse() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .includeSecuritySchemes(false)
+            .addSecurityScheme(new SecuritySchemeConfig(
+                "ApiKey", "apiKey", "header", "x-api-key", null))
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+        OpenAPI openAPI = builder.build(List.of());
+
+        assertThat(openAPI.getSecurity()).isNull();
+        if (openAPI.getComponents() != null) {
+            assertThat(openAPI.getComponents().getSecuritySchemes()).isNull();
+        }
+    }
 }
