@@ -231,7 +231,11 @@ class OpenAPIAnnotationExtractorTest {
 
         assertThat(target).isNotNull();
         assertThat(target.value()).containsExactly(java.lang.annotation.ElementType.METHOD);
+    }
+
+    // ---------------------------------------------------------------------------
     // @OpenAPIResponseSchema annotation tests
+    // ---------------------------------------------------------------------------
 
     @Test
     void shouldReadOpenAPIResponseSchemaAnnotation() throws Exception {
