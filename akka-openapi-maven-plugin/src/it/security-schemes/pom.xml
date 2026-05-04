@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>security-schemes-it</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Security Schemes Invoker Test</name>
+    <description>External consumer fixture exercising the &lt;security&gt; configuration block</description>
+
+    <properties>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>sh.oso</groupId>
+            <artifactId>akka-openapi-annotations</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>sh.oso</groupId>
+                <artifactId>akka-openapi-maven-plugin</artifactId>
+                <version>1.0.0-SNAPSHOT</version>
+                <configuration>
+                    <apiTitle>Security Schemes Test API</apiTitle>
+                    <apiVersion>1.0.0</apiVersion>
+                    <apiDescription>Invoker fixture for &lt;security&gt; configuration block</apiDescription>
+                    <scanPackages>
+                        <package>com.example</package>
+                    </scanPackages>
+                    <outputFile>${project.build.directory}/openapi.yaml</outputFile>
+                    <outputFormat>yaml</outputFormat>
+                    <failOnValidationError>true</failOnValidationError>
+
+                    <security>
+                        <securityScheme>
+                            <schemeName>CustomAuthHeader</schemeName>
+                            <type>apiKey</type>
+                            <in>header</in>
+                            <name>x-custom-auth</name>
+                            <description>Custom authentication header</description>
+                        </securityScheme>
+                        <securityScheme>
+                            <schemeName>ApiKeyQuery</schemeName>
+                            <type>apiKey</type>
+                            <in>query</in>
+                            <name>api_key</name>
+                        </securityScheme>
+                        <securityScheme>
+                            <schemeName>SessionCookie</schemeName>
+                            <type>apiKey</type>
+                            <in>cookie</in>
+                            <name>session_id</name>
+                        </securityScheme>
+                    </security>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
