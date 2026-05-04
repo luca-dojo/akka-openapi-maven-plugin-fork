@@ -126,8 +126,14 @@ jobs:
           cache: 'maven'
 
       - name: Build with coverage
+        # Skip invoker ITs in this job — JaCoCo's prepare-agent injects an
+        # -javaagent argLine that the maven-invoker-plugin inherits into its
+        # forked IT JVMs, where instrumentation aborts the IT before our
+        # plugin's generate goal runs (the YAML never gets written and the
+        # post-build verify.groovy fails on a missing file). Coverage targets
+        # unit tests; the ITs are already gated by build-and-test (JDK 17/21).
         run: |
-          mvn clean verify \
+          mvn clean verify -Dinvoker.skip=true \
             --batch-mode \
             --no-transfer-progress
 
