@@ -91,6 +91,24 @@
                         </server>
                     </servers>
 
+                    <!-- Security Schemes -->
+                    <security>
+                        <securityScheme>
+                            <schemeName>CustomAuthHeader</schemeName>
+                            <type>apiKey</type>
+                            <in>header</in>
+                            <name>x-custom-auth</name>
+                            <description>Custom authentication header</description>
+                        </securityScheme>
+                        <securityScheme>
+                            <schemeName>SecondaryAuthHeader</schemeName>
+                            <type>apiKey</type>
+                            <in>header</in>
+                            <name>x-secondary-auth</name>
+                            <description>Secondary authentication header</description>
+                        </securityScheme>
+                    </security>
+
                     <!-- Output Configuration -->
                     <outputFormat>yaml</outputFormat>
                     <failOnValidationError>true</failOnValidationError>

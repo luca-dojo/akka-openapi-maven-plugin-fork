@@ -2,6 +2,7 @@ package com.github.osodevops.akka.openapi.maven;
 
 import com.github.osodevops.akka.openapi.core.*;
 import com.github.osodevops.akka.openapi.core.config.PluginConfiguration;
+import com.github.osodevops.akka.openapi.core.config.SecuritySchemeConfig;
 import com.github.osodevops.akka.openapi.core.config.ServerConfig;
 import com.github.osodevops.akka.openapi.core.exception.ScanningException;
 import com.github.osodevops.akka.openapi.core.model.EndpointMetadata;
@@ -144,6 +145,24 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
     private List<ServerConfigParam> servers;
 
     /**
+     * Security scheme configurations for the OpenAPI spec.
+     *
+     * <p>Example configuration:</p>
+     * <pre>{@code
+     * <security>
+     *   <securityScheme>
+     *     <schemeName>CustomAuthHeader</schemeName>
+     *     <type>apiKey</type>
+     *     <in>header</in>
+     *     <name>x-custom-auth</name>
+     *   </securityScheme>
+     * </security>
+     * }</pre>
+     */
+    @Parameter
+    private List<SecuritySchemeParam> security;
+
+    /**
      * Whether to skip plugin execution.
      */
     @Parameter(property = "openapi.skip", defaultValue = "false")
@@ -220,6 +239,13 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
         if (servers != null) {
             for (ServerConfigParam server : servers) {
                 builder.addServer(new ServerConfig(server.url, server.description));
+            }
+        }
+
+        if (security != null) {
+            for (SecuritySchemeParam scheme : security) {
+                builder.addSecurityScheme(new SecuritySchemeConfig(
+                    scheme.schemeName, scheme.type, scheme.in, scheme.name, scheme.description));
             }
         }
 
@@ -375,6 +401,10 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
         this.servers = servers;
     }
 
+    public void setSecurity(List<SecuritySchemeParam> security) {
+        this.security = security;
+    }
+
     /**
      * Server configuration parameter for Maven plugin configuration.
      */
@@ -391,6 +421,79 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
 
         public void setUrl(String url) {
             this.url = url;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+    }
+
+    /**
+     * Security scheme configuration parameter for Maven plugin configuration.
+     *
+     * <p>Used within the {@code <security>} configuration block:</p>
+     * <pre>{@code
+     * <security>
+     *   <securityScheme>
+     *     <schemeName>CustomAuthHeader</schemeName>
+     *     <type>apiKey</type>
+     *     <in>header</in>
+     *     <name>x-custom-auth</name>
+     *     <description>Custom authentication header</description>
+     *   </securityScheme>
+     * </security>
+     * }</pre>
+     */
+    public static class SecuritySchemeParam {
+        @Parameter
+        private String schemeName;
+
+        @Parameter
+        private String type = "apiKey";
+
+        @Parameter
+        private String in = "header";
+
+        @Parameter
+        private String name;
+
+        @Parameter
+        private String description;
+
+        public String getSchemeName() {
+            return schemeName;
+        }
+
+        public void setSchemeName(String schemeName) {
+            this.schemeName = schemeName;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getIn() {
+            return in;
+        }
+
+        public void setIn(String in) {
+            this.in = in;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
         }
 
         public String getDescription() {

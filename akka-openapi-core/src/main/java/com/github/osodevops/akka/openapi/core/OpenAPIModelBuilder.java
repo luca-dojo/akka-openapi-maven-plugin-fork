@@ -1,6 +1,7 @@
 package com.github.osodevops.akka.openapi.core;
 
 import com.github.osodevops.akka.openapi.core.config.PluginConfiguration;
+import com.github.osodevops.akka.openapi.core.config.SecuritySchemeConfig;
 import com.github.osodevops.akka.openapi.core.config.ServerConfig;
 import com.github.osodevops.akka.openapi.core.model.*;
 import com.github.osodevops.akka.openapi.core.model.OperationMetadata.HttpMethod;
@@ -16,6 +17,8 @@ import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.parameters.RequestBody;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.servers.Server;
 import io.swagger.v3.oas.models.ExternalDocumentation;
 import io.swagger.v3.oas.models.tags.Tag;
@@ -127,6 +130,39 @@ public class OpenAPIModelBuilder {
                 openAPI.setComponents(components);
             }
             components.setSchemas(new LinkedHashMap<>(schemas));
+        }
+
+        // Build security schemes from configuration
+        List<SecuritySchemeConfig> securitySchemeConfigs = config.getSecuritySchemes();
+        if (securitySchemeConfigs != null && !securitySchemeConfigs.isEmpty()) {
+            Components components = openAPI.getComponents();
+            if (components == null) {
+                components = new Components();
+                openAPI.setComponents(components);
+            }
+
+            Map<String, SecurityScheme> securitySchemes = new LinkedHashMap<>();
+            List<SecurityRequirement> securityRequirements = new ArrayList<>();
+
+            for (SecuritySchemeConfig schemeConfig : securitySchemeConfigs) {
+                SecurityScheme scheme = new SecurityScheme();
+                scheme.setType(mapSecuritySchemeType(schemeConfig.getType()));
+                scheme.setIn(mapSecuritySchemeIn(schemeConfig.getIn()));
+                scheme.setName(schemeConfig.getName());
+                if (schemeConfig.getDescription() != null && !schemeConfig.getDescription().isEmpty()) {
+                    scheme.setDescription(schemeConfig.getDescription());
+                }
+                securitySchemes.put(schemeConfig.getSchemeName(), scheme);
+
+                SecurityRequirement requirement = new SecurityRequirement();
+                requirement.addList(schemeConfig.getSchemeName());
+                securityRequirements.add(requirement);
+            }
+
+            components.setSecuritySchemes(securitySchemes);
+            openAPI.setSecurity(securityRequirements);
+
+            logger.accept("Added " + securitySchemes.size() + " security schemes");
         }
 
         logger.accept("OpenAPI specification built successfully with " + paths.size() + " paths");
@@ -520,6 +556,24 @@ public class OpenAPIModelBuilder {
         }
 
         return fullPath;
+    }
+
+    private SecurityScheme.Type mapSecuritySchemeType(String type) {
+        return switch (type.toLowerCase()) {
+            case "apikey" -> SecurityScheme.Type.APIKEY;
+            case "http" -> SecurityScheme.Type.HTTP;
+            case "oauth2" -> SecurityScheme.Type.OAUTH2;
+            case "openidconnect" -> SecurityScheme.Type.OPENIDCONNECT;
+            default -> SecurityScheme.Type.APIKEY;
+        };
+    }
+
+    private SecurityScheme.In mapSecuritySchemeIn(String in) {
+        return switch (in.toLowerCase()) {
+            case "query" -> SecurityScheme.In.QUERY;
+            case "cookie" -> SecurityScheme.In.COOKIE;
+            default -> SecurityScheme.In.HEADER;
+        };
     }
 
     /**

@@ -91,4 +91,49 @@ class GenerateOpenAPIMojoTest {
         assertThat(server.getUrl()).isEqualTo("https://api.example.com");
         assertThat(server.getDescription()).isEqualTo("Production server");
     }
+
+    @Test
+    void shouldCreateSecuritySchemeParam() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+
+        scheme.setSchemeName("CustomAuthHeader");
+        scheme.setType("apiKey");
+        scheme.setIn("header");
+        scheme.setName("x-custom-auth");
+        scheme.setDescription("Custom authentication header");
+
+        assertThat(scheme.getSchemeName()).isEqualTo("CustomAuthHeader");
+        assertThat(scheme.getType()).isEqualTo("apiKey");
+        assertThat(scheme.getIn()).isEqualTo("header");
+        assertThat(scheme.getName()).isEqualTo("x-custom-auth");
+        assertThat(scheme.getDescription()).isEqualTo("Custom authentication header");
+    }
+
+    @Test
+    void shouldConfigureSecuritySchemes() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme1 = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme1.setSchemeName("CustomAuthHeader");
+        scheme1.setType("apiKey");
+        scheme1.setIn("header");
+        scheme1.setName("x-custom-auth");
+
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme2 = new GenerateOpenAPIMojo.SecuritySchemeParam();
+        scheme2.setSchemeName("SecondaryAuthHeader");
+        scheme2.setType("apiKey");
+        scheme2.setIn("header");
+        scheme2.setName("x-secondary-auth");
+
+        mojo.setSecurity(List.of(scheme1, scheme2));
+
+        assertThat(scheme1.getSchemeName()).isEqualTo("CustomAuthHeader");
+        assertThat(scheme2.getSchemeName()).isEqualTo("SecondaryAuthHeader");
+    }
+
+    @Test
+    void shouldHaveDefaultsForSecuritySchemeParam() {
+        GenerateOpenAPIMojo.SecuritySchemeParam scheme = new GenerateOpenAPIMojo.SecuritySchemeParam();
+
+        assertThat(scheme.getType()).isEqualTo("apiKey");
+        assertThat(scheme.getIn()).isEqualTo("header");
+    }
 }
