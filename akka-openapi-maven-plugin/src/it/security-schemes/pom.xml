@@ -13,13 +13,14 @@
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <akka-openapi.version>${project.version}</akka-openapi.version>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>sh.oso</groupId>
             <artifactId>akka-openapi-annotations</artifactId>
-            <version>1.0.0-SNAPSHOT</version>
+            <version>${akka-openapi.version}</version>
         </dependency>
     </dependencies>
 
@@ -28,7 +29,7 @@
             <plugin>
                 <groupId>sh.oso</groupId>
                 <artifactId>akka-openapi-maven-plugin</artifactId>
-                <version>1.0.0-SNAPSHOT</version>
+                <version>${akka-openapi.version}</version>
                 <configuration>
                     <apiTitle>Security Schemes Test API</apiTitle>
                     <apiVersion>1.0.0</apiVersion>

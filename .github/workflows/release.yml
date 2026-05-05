@@ -6,8 +6,22 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 1.0.2). Required for manual dispatch.'
+        description: 'Release version (e.g., 1.1.0). Required for manual dispatch.'
         required: true
+        type: string
+      tag_name:
+        description: 'Existing GitHub release tag to attach artifacts to (optional, e.g., v1.1.0).'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.1.0).'
+        required: true
+        type: string
+      tag_name:
+        description: 'GitHub release tag to attach artifacts to (e.g., v1.1.0).'
+        required: false
         type: string
 
 permissions:
@@ -17,55 +31,78 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get-version.outputs.version }}
+      version: ${{ steps.release-version.outputs.version }}
+      tag_name: ${{ steps.release-version.outputs.tag_name }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
 
-      - name: Get version from release event or input
-        id: get-version
+      - name: Resolve release version
+        id: release-version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version || github.event.inputs.version || '' }}
+          INPUT_TAG_NAME: ${{ inputs.tag_name || github.event.inputs.tag_name || '' }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION=${GITHUB_REF_NAME#v}
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG_NAME="$RELEASE_TAG_NAME"
+            VERSION="${TAG_NAME#v}"
           else
-            VERSION=${{ github.event.inputs.version }}
+            TAG_NAME="$INPUT_TAG_NAME"
+            VERSION="${INPUT_VERSION#v}"
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [ -z "$VERSION" ]; then
+            echo "Release version is required." >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *-SNAPSHOT ]]; then
+            echo "Refusing to publish a Maven Central release for snapshot version: $VERSION" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
           echo "Releasing version: $VERSION"
+          if [ -n "$TAG_NAME" ]; then
+            echo "GitHub release tag: $TAG_NAME"
+          fi
 
       - name: Set up JDK 17
-        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Set version in POM
+      - name: Set release version in POMs
         run: |
-          mvn versions:set -DnewVersion=${{ steps.get-version.outputs.version }} --batch-mode
-          mvn versions:commit --batch-mode
+          mvn versions:set -DnewVersion=${{ steps.release-version.outputs.version }} --batch-mode --no-transfer-progress
+          mvn versions:commit --batch-mode --no-transfer-progress
 
-      - name: Build and test
+      - name: Build and test release version
         run: |
           mvn clean verify \
             --batch-mode \
             --no-transfer-progress
 
-  build-and-sign:
+  publish:
     needs: validate
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
 
       - name: Set up JDK 17 for publishing
-        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -76,93 +113,92 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Set version in POM
+      - name: Set release version in POMs
         run: |
-          mvn versions:set -DnewVersion=${{ needs.validate.outputs.version }} --batch-mode
-          mvn versions:commit --batch-mode
+          mvn versions:set -DnewVersion=${{ needs.validate.outputs.version }} --batch-mode --no-transfer-progress
+          mvn versions:commit --batch-mode --no-transfer-progress
 
-      - name: Build and sign artifacts
+      - name: Check Maven Central credentials
         env:
-          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_USERNAME || secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN || secrets.OSSRH_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
         run: |
-          mvn clean verify \
-            --batch-mode \
-            --no-transfer-progress \
-            -Prelease \
-            -DskipTests
+          test -n "$MAVEN_USERNAME" || { echo "CENTRAL_USERNAME or OSSRH_USERNAME is required." >&2; exit 1; }
+          test -n "$MAVEN_PASSWORD" || { echo "CENTRAL_TOKEN or OSSRH_TOKEN is required." >&2; exit 1; }
+          test -n "$MAVEN_GPG_PASSPHRASE" || { echo "MAVEN_GPG_PASSPHRASE is required." >&2; exit 1; }
 
       - name: Deploy to Maven Central
         env:
-          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_USERNAME || secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN || secrets.OSSRH_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
         run: |
-          mvn deploy \
+          mvn clean deploy \
             --batch-mode \
             --no-transfer-progress \
             -Prelease \
-            -DskipTests
+            -DskipTests \
+            -Dinvoker.skip=true
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: maven-artifacts
+          name: maven-release-artifacts
           path: |
             **/target/*.jar
             **/target/*.pom
-            !**/target/*-sources.jar
-            !**/target/*-javadoc.jar
+            **/target/*.asc
+            **/target/central-publishing/*.zip
+            !**/target/original-*.jar
 
       - name: Attach artifacts to GitHub Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        if: needs.validate.outputs.tag_name != ''
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
-          tag_name: v${{ needs.validate.outputs.version }}
+          tag_name: ${{ needs.validate.outputs.tag_name }}
           files: |
             **/target/*.jar
+            **/target/*.pom
+            **/target/*.asc
             !**/target/original-*.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release Summary
+      - name: Release summary
         run: |
-          echo "✅ Release v${{ needs.validate.outputs.version }} published!"
-          echo ""
-          echo "🎯 Release Checklist:"
-          echo "- ✅ Code signed with GPG"
-          echo "- ✅ Deployed to Maven Central Staging"
-          echo "- ✅ GitHub Release created"
-          echo ""
-          echo "📦 Maven Central Sync Timeline:"
-          echo "- Immediate: Available in staging repository"
-          echo "- 10-30 min: Synced to Maven Central"
-          echo "- 2-3 hours: Searchable in Maven Central"
-          echo ""
-          echo "🔗 Maven Central URL (after sync):"
+          echo "Release v${{ needs.validate.outputs.version }} published to Maven Central."
+          if [ -n "${{ needs.validate.outputs.tag_name }}" ]; then
+            echo "Artifacts attached to GitHub release ${{ needs.validate.outputs.tag_name }}."
+          fi
+          echo "Maven Central URL:"
           echo "https://search.maven.org/artifact/sh.oso/akka-openapi-maven-plugin/${{ needs.validate.outputs.version }}"
-          echo ""
-          echo "📚 Usage:"
-          echo "<plugin>"
-          echo "  <groupId>sh.oso</groupId>"
-          echo "  <artifactId>akka-openapi-maven-plugin</artifactId>"
-          echo "  <version>${{ needs.validate.outputs.version }}</version>"
-          echo "</plugin>"
 
   notify:
-    needs: [ validate, build-and-sign ]
+    needs: [ validate, publish ]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
       - name: Send Slack notification
-        uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3
-        with:
-          status: ${{ job.status }}
-          text: "akka-openapi-maven-plugin v${{ needs.validate.outputs.version }} release ${{ job.status == 'success' && 'succeeded' || 'failed' }}!"
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-          fields: repo,message,commit,author,action,eventName,ref,workflow
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_RESULT: ${{ needs.publish.result }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "Slack webhook is not configured."
+            exit 0
+          fi
+
+          if [ -z "$RELEASE_VERSION" ]; then
+            RELEASE_VERSION="unknown"
+          fi
+
+          text="akka-openapi-maven-plugin v${RELEASE_VERSION} release ${RELEASE_RESULT}"
+          payload=$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))')
+          curl -fsS -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL"
         continue-on-error: true
