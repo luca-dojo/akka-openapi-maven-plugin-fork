@@ -35,9 +35,9 @@ import java.util.stream.Collectors;
  * <p>Usage in pom.xml:</p>
  * <pre>{@code
  * <plugin>
- *   <groupId>com.github.osodevops</groupId>
+ *   <groupId>sh.oso</groupId>
  *   <artifactId>akka-openapi-maven-plugin</artifactId>
- *   <version>1.0.0-SNAPSHOT</version>
+ *   <version>1.1.0</version>
  *   <executions>
  *     <execution>
  *       <goals>
