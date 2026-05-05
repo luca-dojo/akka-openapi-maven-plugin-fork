@@ -114,7 +114,12 @@ public class OpenAPIModelBuilder {
             openAPI.setServers(servers);
         }
 
-        openAPI.setPaths(paths);
+        // Sort paths alphabetically for deterministic output
+        Paths sortedPaths = new Paths();
+        paths.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .forEach(entry -> sortedPaths.put(entry.getKey(), entry.getValue()));
+        openAPI.setPaths(sortedPaths);
 
         // Build Tags section
         if (!allTags.isEmpty()) {
@@ -129,7 +134,7 @@ public class OpenAPIModelBuilder {
                 components = new Components();
                 openAPI.setComponents(components);
             }
-            components.setSchemas(new LinkedHashMap<>(schemas));
+            components.setSchemas(new TreeMap<>(schemas));
         }
 
         // Build security schemes from configuration
@@ -288,6 +293,11 @@ public class OpenAPIModelBuilder {
         for (OperationMetadata operation : endpoint.getOperations()) {
             String fullPath = normalizePath(endpoint.getBasePath(), operation.getPath());
 
+            // Strip server path prefix if configured
+            if (config.isStripServerPathPrefix()) {
+                fullPath = stripServerPathPrefix(fullPath);
+            }
+
             PathItem pathItem = paths.get(fullPath);
             if (pathItem == null) {
                 pathItem = new PathItem();
@@ -296,6 +306,60 @@ public class OpenAPIModelBuilder {
 
             Operation openApiOp = buildOperation(operation, endpoint);
             setOperationOnPathItem(pathItem, operation.getHttpMethod(), openApiOp);
+        }
+    }
+
+    /**
+     * Strips the server path prefix from an endpoint path to avoid duplication.
+     *
+     * <p>For example, if a server URL is {@code /api/v1} and the endpoint path
+     * is {@code /api/v1/users}, this method returns {@code /users}.</p>
+     *
+     * @param fullPath the full endpoint path
+     * @return the path with server prefix removed
+     */
+    private String stripServerPathPrefix(String fullPath) {
+        for (ServerConfig sc : config.getServers()) {
+            String serverUrl = sc.getUrl();
+            if (serverUrl == null) {
+                continue;
+            }
+            // Extract path component from server URL
+            String serverPath = extractPathFromUrl(serverUrl);
+            if (serverPath != null && !serverPath.isEmpty() && !"/".equals(serverPath)) {
+                // Remove trailing slash from server path
+                String normalizedServerPath = serverPath.endsWith("/")
+                    ? serverPath.substring(0, serverPath.length() - 1)
+                    : serverPath;
+                if (fullPath.startsWith(normalizedServerPath + "/") || fullPath.equals(normalizedServerPath)) {
+                    String stripped = fullPath.substring(normalizedServerPath.length());
+                    if (stripped.isEmpty()) {
+                        stripped = "/";
+                    }
+                    logger.accept("Stripped server path prefix '" + normalizedServerPath + "' from: "
+                        + fullPath + " -> " + stripped);
+                    return stripped;
+                }
+            }
+        }
+        return fullPath;
+    }
+
+    /**
+     * Extracts the path component from a URL string.
+     * For relative URLs like "/api/v1", returns the URL itself.
+     * For absolute URLs like "https://api.example.com/api/v1", returns "/api/v1".
+     */
+    private String extractPathFromUrl(String url) {
+        if (url.startsWith("/")) {
+            return url;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String path = uri.getPath();
+            return path != null ? path : "";
+        } catch (Exception e) {
+            return "";
         }
     }
 

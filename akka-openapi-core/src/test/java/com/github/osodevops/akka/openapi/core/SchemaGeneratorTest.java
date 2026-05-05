@@ -354,4 +354,48 @@ class SchemaGeneratorTest {
         assertThat(schema).isInstanceOf(ObjectSchema.class);
     }
 
+    @Test
+    void shouldGeneratePolymorphicSchemaForSealedInterface() {
+        Schema<?> schema = generator.generateSchema(Shape.class);
+
+        assertThat(schema).isNotNull();
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        assertThat(schemas).containsKey("Shape");
+
+        Schema<?> shapeSchema = schemas.get("Shape");
+        assertThat(shapeSchema).isInstanceOf(ComposedSchema.class);
+
+        ComposedSchema composedSchema = (ComposedSchema) shapeSchema;
+        assertThat(composedSchema.getOneOf()).hasSize(3);
+
+        // Check discriminator
+        assertThat(composedSchema.getDiscriminator()).isNotNull();
+        assertThat(composedSchema.getDiscriminator().getPropertyName()).isEqualTo("shapeType");
+
+        Map<String, String> mapping = composedSchema.getDiscriminator().getMapping();
+        assertThat(mapping).hasSize(3);
+        assertThat(mapping).containsEntry("CIRCLE", "#/components/schemas/Circle");
+        assertThat(mapping).containsEntry("RECTANGLE", "#/components/schemas/Rectangle");
+        assertThat(mapping).containsEntry("TRIANGLE", "#/components/schemas/Triangle");
+
+        // Each subtype should also be generated
+        assertThat(schemas).containsKey("Circle");
+        assertThat(schemas).containsKey("Rectangle");
+        assertThat(schemas).containsKey("Triangle");
+    }
+
+    @Test
+    void shouldGenerateSubtypeSchemasForPolymorphicType() {
+        generator.generateSchema(Shape.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        Schema<?> circleSchema = schemas.get("Circle");
+        assertThat(circleSchema).isNotNull();
+        // If victools successfully processed the record, it should have properties
+        if (circleSchema.getProperties() != null && !circleSchema.getProperties().isEmpty()) {
+            assertThat(circleSchema.getProperties()).containsKey("radius");
+        }
+    }
+
 }

@@ -5,6 +5,7 @@ import com.github.osodevops.akka.openapi.core.fixtures.AnnotatedEndpoint;
 import com.github.osodevops.akka.openapi.core.fixtures.GetCustomerResponse;
 import com.github.osodevops.akka.openapi.core.fixtures.LowLevelHttpResponseEndpoint;
 import com.github.osodevops.akka.openapi.core.fixtures.SimpleEndpoint;
+import com.github.osodevops.akka.openapi.core.fixtures.StreamingEndpoint;
 import com.github.osodevops.akka.openapi.core.model.InfoMetadata;
 import com.github.osodevops.akka.openapi.core.model.ServerMetadata;
 import com.github.osodevops.akka.openapi.core.model.TagMetadata;
@@ -263,5 +264,34 @@ class OpenAPIAnnotationExtractorTest {
         // Simply verifying we can read it at runtime confirms RUNTIME retention
         assertThat(annotation).isNotNull();
         assertThat(annotation.value().getSimpleName()).isEqualTo("GetCustomerResponse");
+    }
+
+    @Test
+    void shouldReadContentTypeFromOpenAPIResponse() throws Exception {
+        Method method = StreamingEndpoint.class.getMethod("streamEvents");
+        OpenAPIResponse[] responses = method.getAnnotationsByType(OpenAPIResponse.class);
+
+        assertThat(responses).hasSize(1);
+        assertThat(responses[0].status()).isEqualTo("200");
+        assertThat(responses[0].description()).isEqualTo("Live feed established");
+        assertThat(responses[0].mediaType()).isEqualTo("text/event-stream");
+        assertThat(responses[0].responseType()).isEqualTo(String.class);
+    }
+
+    @Test
+    void shouldReadBinaryContentTypeFromOpenAPIResponse() throws Exception {
+        Method method = StreamingEndpoint.class.getMethod("downloadFile");
+        OpenAPIResponse[] responses = method.getAnnotationsByType(OpenAPIResponse.class);
+
+        assertThat(responses).hasSize(1);
+        assertThat(responses[0].mediaType()).isEqualTo("application/octet-stream");
+    }
+
+    @Test
+    void shouldDefaultContentTypeToApplicationJson() throws Exception {
+        Method method = AnnotatedEndpoint.class.getMethod("listCustomers");
+        OpenAPIResponse[] responses = method.getAnnotationsByType(OpenAPIResponse.class);
+
+        assertThat(responses[0].mediaType()).isEqualTo("application/json");
     }
 }

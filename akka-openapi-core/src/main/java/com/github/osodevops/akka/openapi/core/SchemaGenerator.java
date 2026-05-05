@@ -1,5 +1,7 @@
 package com.github.osodevops.akka.openapi.core;
 
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -176,6 +178,13 @@ public class SchemaGenerator {
         try {
             logger.accept("Generating schema for: " + typeName);
 
+            // Check for polymorphic types with @JsonTypeInfo and @JsonSubTypes
+            Schema<?> polymorphicSchema = tryPolymorphicSchema(rawClass, typeName);
+            if (polymorphicSchema != null) {
+                generatedSchemas.put(typeName, polymorphicSchema);
+                return polymorphicSchema;
+            }
+
             // Generate JSON Schema using victools
             ObjectNode jsonSchema = jsonSchemaGenerator.generateSchema(javaType);
 
@@ -194,7 +203,299 @@ public class SchemaGenerator {
         }
     }
 
-    private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
+    /**
+     * Attempts to generate a polymorphic schema for types annotated with
+     * {@code @JsonTypeInfo} and {@code @JsonSubTypes}.
+     *
+     * @param rawClass the class to inspect
+     * @param typeName the schema name for this type
+     * @return a composed schema with oneOf/discriminator, or null if not polymorphic
+     */
+    @SuppressWarnings("unchecked")
+    private Schema<?> tryPolymorphicSchema(Class<?> rawClass, String typeName) {
+        // Look up annotations by class identity first, then by name for cross-classloader support
+        JsonTypeInfo typeInfo = rawClass.getAnnotation(JsonTypeInfo.class);
+        JsonSubTypes subTypes = rawClass.getAnnotation(JsonSubTypes.class);
+
+        // If direct annotation lookup fails, try by name (cross-classloader scenario)
+        if (typeInfo == null || subTypes == null) {
+            return tryPolymorphicSchemaByReflection(rawClass, typeName);
+        }
+
+        if (subTypes.value().length == 0) {
+            return null;
+        }
+
+        logger.accept("Detected polymorphic type: " + typeName +
+            " with " + subTypes.value().length + " subtypes");
+
+        String discriminatorProperty = typeInfo.property();
+
+        // Build oneOf references and discriminator mapping
+        List<Schema> oneOfSchemas = new ArrayList<>();
+        Map<String, String> discriminatorMapping = new LinkedHashMap<>();
+
+        for (JsonSubTypes.Type subType : subTypes.value()) {
+            Class<?> subClass = subType.value();
+            String subTypeName = subClass.getSimpleName();
+            String discriminatorValue = subType.name();
+
+            // Generate schema for each subtype using victools directly,
+            // with a reflection-based fallback for records
+            if (!generatedSchemas.containsKey(subTypeName)) {
+                try {
+                    ObjectNode subJsonSchema = jsonSchemaGenerator.generateSchema(subClass);
+                    Schema<?> subSchema = convertJsonSchemaToOpenApi(subJsonSchema, subTypeName);
+                    if (subSchema instanceof ObjectSchema &&
+                        (subSchema.getProperties() == null || subSchema.getProperties().isEmpty())) {
+                        Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
+                        if (reflectionSchema != null) {
+                            generatedSchemas.put(subTypeName, reflectionSchema);
+                        } else if (subSchema != null) {
+                            generatedSchemas.put(subTypeName, subSchema);
+                        }
+                    } else if (subSchema != null) {
+                        generatedSchemas.put(subTypeName, subSchema);
+                    }
+                } catch (Exception e) {
+                    logger.accept("Warning: could not generate schema for subtype " +
+                        subTypeName + " via victools, trying reflection: " + e.getMessage());
+                    Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
+                    generatedSchemas.put(subTypeName,
+                        reflectionSchema != null ? reflectionSchema : new ObjectSchema());
+                }
+            }
+
+            Schema<?> ref = new Schema<>();
+            ref.set$ref("#/components/schemas/" + subTypeName);
+            oneOfSchemas.add(ref);
+            discriminatorMapping.put(discriminatorValue, "#/components/schemas/" + subTypeName);
+        }
+
+        // Build the composed schema
+        ComposedSchema composedSchema = new ComposedSchema();
+        composedSchema.setOneOf(oneOfSchemas);
+
+        Discriminator discriminator = new Discriminator();
+        discriminator.setPropertyName(discriminatorProperty);
+        discriminator.setMapping(discriminatorMapping);
+        composedSchema.setDiscriminator(discriminator);
+
+        return composedSchema;
+    }
+
+    /**
+     * Fallback polymorphic schema generation using reflection to find annotations by name.
+     * This handles the cross-classloader scenario where annotation classes loaded by the
+     * plugin classloader differ from those loaded by the project classloader.
+     */
+    @SuppressWarnings("unchecked")
+    private Schema<?> tryPolymorphicSchemaByReflection(Class<?> rawClass, String typeName) {
+        try {
+            java.lang.annotation.Annotation typeInfoAnn = null;
+            java.lang.annotation.Annotation subTypesAnn = null;
+
+            for (java.lang.annotation.Annotation ann : rawClass.getAnnotations()) {
+                String annName = ann.annotationType().getName();
+                if ("com.fasterxml.jackson.annotation.JsonTypeInfo".equals(annName)) {
+                    typeInfoAnn = ann;
+                } else if ("com.fasterxml.jackson.annotation.JsonSubTypes".equals(annName)) {
+                    subTypesAnn = ann;
+                }
+            }
+
+            if (typeInfoAnn == null || subTypesAnn == null) {
+                return null;
+            }
+
+            // Extract property from @JsonTypeInfo
+            java.lang.reflect.Method propertyMethod = typeInfoAnn.annotationType().getMethod("property");
+            String discriminatorProperty = (String) propertyMethod.invoke(typeInfoAnn);
+
+            // Extract subtypes from @JsonSubTypes
+            java.lang.reflect.Method valueMethod = subTypesAnn.annotationType().getMethod("value");
+            Object[] subTypeArray = (Object[]) valueMethod.invoke(subTypesAnn);
+
+            if (subTypeArray == null || subTypeArray.length == 0) {
+                return null;
+            }
+
+            logger.accept("Detected polymorphic type (via reflection): " + typeName +
+                " with " + subTypeArray.length + " subtypes");
+
+            List<Schema> oneOfSchemas = new ArrayList<>();
+            Map<String, String> discriminatorMapping = new LinkedHashMap<>();
+
+            for (Object subTypeObj : subTypeArray) {
+                // Each element is a @JsonSubTypes.Type annotation
+                java.lang.reflect.Method subValueMethod = subTypeObj.getClass().getMethod("value");
+                java.lang.reflect.Method subNameMethod = subTypeObj.getClass().getMethod("name");
+
+                Class<?> subClass = (Class<?>) subValueMethod.invoke(subTypeObj);
+                String discriminatorValue = (String) subNameMethod.invoke(subTypeObj);
+                String subTypeName = subClass.getSimpleName();
+
+                // Generate schema for each subtype using victools directly,
+                // with a reflection-based fallback for records
+                if (!generatedSchemas.containsKey(subTypeName)) {
+                    try {
+                        ObjectNode subJsonSchema = jsonSchemaGenerator.generateSchema(subClass);
+                        Schema<?> subSchema = convertJsonSchemaToOpenApi(subJsonSchema, subTypeName);
+                        // If victools returns an empty object schema, try reflection-based generation
+                        if (subSchema instanceof ObjectSchema &&
+                            (subSchema.getProperties() == null || subSchema.getProperties().isEmpty())) {
+                            Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
+                            if (reflectionSchema != null) {
+                                generatedSchemas.put(subTypeName, reflectionSchema);
+                            } else if (subSchema != null) {
+                                generatedSchemas.put(subTypeName, subSchema);
+                            }
+                        } else if (subSchema != null) {
+                            generatedSchemas.put(subTypeName, subSchema);
+                        }
+                    } catch (Exception e) {
+                        logger.accept("Warning: could not generate schema for subtype " +
+                            subTypeName + " via victools, trying reflection: " + e.getMessage());
+                        Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
+                        generatedSchemas.put(subTypeName,
+                            reflectionSchema != null ? reflectionSchema : new ObjectSchema());
+                    }
+                }
+
+                Schema<?> ref = new Schema<>();
+                ref.set$ref("#/components/schemas/" + subTypeName);
+                oneOfSchemas.add(ref);
+                discriminatorMapping.put(discriminatorValue, "#/components/schemas/" + subTypeName);
+            }
+
+            ComposedSchema composedSchema = new ComposedSchema();
+            composedSchema.setOneOf(oneOfSchemas);
+
+            Discriminator discriminator = new Discriminator();
+            discriminator.setPropertyName(discriminatorProperty);
+            discriminator.setMapping(discriminatorMapping);
+            composedSchema.setDiscriminator(discriminator);
+
+            return composedSchema;
+
+        } catch (Exception e) {
+            logger.accept("Warning: reflection-based polymorphic detection failed for " +
+                typeName + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Generates a schema for a class using pure Java reflection.
+     *
+     * <p>This is used as a fallback for types that victools cannot introspect
+     * correctly (e.g., records implementing sealed interfaces loaded via a
+     * different classloader). It inspects record components first, then
+     * falls back to public getter methods.</p>
+     *
+     * @param clazz the class to inspect
+     * @param typeName the schema name to use
+     * @return an ObjectSchema with the discovered properties, or null if none found
+     */
+    private Schema<?> generateSchemaByReflection(Class<?> clazz, String typeName) {
+        try {
+            logger.accept("Generating schema via reflection for: " + typeName);
+            ObjectSchema objectSchema = new ObjectSchema();
+
+            // Java records expose components via Class.getRecordComponents()
+            java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
+            if (components != null && components.length > 0) {
+                for (java.lang.reflect.RecordComponent component : components) {
+                    String propName = component.getName();
+                    Class<?> propType = component.getType();
+                    Schema<?> propSchema = mapJavaTypeToSchema(propType, component.getGenericType());
+                    if (propSchema != null) {
+                        objectSchema.addProperty(propName, propSchema);
+                    }
+                }
+                return objectSchema;
+            }
+
+            // For non-records, inspect public getter methods
+            for (java.lang.reflect.Method method : clazz.getMethods()) {
+                String methodName = method.getName();
+                if (method.getParameterCount() != 0 || method.getDeclaringClass() == Object.class) {
+                    continue;
+                }
+                String propName = null;
+                if (methodName.startsWith("get") && methodName.length() > 3) {
+                    propName = Character.toLowerCase(methodName.charAt(3)) + methodName.substring(4);
+                } else if (methodName.startsWith("is") && methodName.length() > 2) {
+                    propName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3);
+                }
+                if (propName != null && !propName.isBlank()) {
+                    Schema<?> propSchema = mapJavaTypeToSchema(
+                        method.getReturnType(), method.getGenericReturnType());
+                    if (propSchema != null) {
+                        objectSchema.addProperty(propName, propSchema);
+                    }
+                }
+            }
+
+            return objectSchema.getProperties() != null && !objectSchema.getProperties().isEmpty()
+                ? objectSchema : null;
+
+        } catch (Exception e) {
+            logger.accept("Warning: reflection-based schema generation failed for " +
+                typeName + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Maps a Java type to an OpenAPI schema using simple type matching.
+     * Used by the reflection-based schema generator.
+     */
+    private Schema<?> mapJavaTypeToSchema(Class<?> type, java.lang.reflect.Type genericType) {
+        // Unwrap Optional<T>
+        if (Optional.class.isAssignableFrom(type) && genericType instanceof java.lang.reflect.ParameterizedType) {
+            java.lang.reflect.Type inner =
+                ((java.lang.reflect.ParameterizedType) genericType).getActualTypeArguments()[0];
+            if (inner instanceof Class<?>) {
+                return mapJavaTypeToSchema((Class<?>) inner, inner);
+            }
+        }
+
+        // Simple types
+        Schema<?> simple = trySimpleTypeSchema(type);
+        if (simple != null) {
+            return simple;
+        }
+
+        // Collections: List, Set
+        if (List.class.isAssignableFrom(type) || Set.class.isAssignableFrom(type)) {
+            ArraySchema array = new ArraySchema();
+            if (genericType instanceof java.lang.reflect.ParameterizedType) {
+                java.lang.reflect.Type inner =
+                    ((java.lang.reflect.ParameterizedType) genericType).getActualTypeArguments()[0];
+                if (inner instanceof Class<?>) {
+                    array.setItems(mapJavaTypeToSchema((Class<?>) inner, inner));
+                }
+            }
+            return array;
+        }
+
+        // Enum
+        if (type.isEnum()) {
+            StringSchema enumSchema = new StringSchema();
+            for (Object constant : type.getEnumConstants()) {
+                enumSchema.addEnumItem(constant.toString());
+            }
+            return enumSchema;
+        }
+
+        // Complex object - use $ref if already generated, otherwise ObjectSchema placeholder
+        String refTypeName = type.getSimpleName();
+        if (generatedSchemas.containsKey(refTypeName)) {
+            return createReference(refTypeName);
+        }
+        return new ObjectSchema();
+    }    private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
         // Extract definitions first (they may be under $defs in draft 2020-12)
         JsonNode defs = jsonSchema.get("$defs");
         if (defs == null) {
