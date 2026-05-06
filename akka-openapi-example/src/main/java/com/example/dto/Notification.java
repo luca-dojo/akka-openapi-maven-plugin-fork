@@ -22,4 +22,3 @@ public sealed interface Notification
 
     String message();
 }
-

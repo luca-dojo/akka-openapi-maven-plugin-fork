@@ -9,4 +9,3 @@ public record Circle(double radius) implements Shape {
         return Math.PI * radius * radius;
     }
 }
-

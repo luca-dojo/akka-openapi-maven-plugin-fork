@@ -25,5 +25,3 @@ public class StreamingEndpoint {
         return new byte[0];
     }
 }
-
-

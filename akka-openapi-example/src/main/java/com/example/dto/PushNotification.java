@@ -10,4 +10,3 @@ public record PushNotification(
     String deviceToken
 ) implements Notification {
 }
-

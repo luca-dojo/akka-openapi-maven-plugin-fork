@@ -16,6 +16,7 @@ import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
+import io.swagger.v3.oas.models.servers.Server;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -1107,6 +1108,73 @@ class OpenAPIModelBuilderTest {
 
         assertThat(openAPI.getPaths()).containsKey("/invoices");
         assertThat(openAPI.getPaths()).doesNotContainKey("/billing/invoices");
+    }
+
+    @Test
+    void shouldStripAnnotationServerPathPrefixFromEndpointPaths() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .stripServerPathPrefix(true)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("CatalogEndpoint")
+            .basePath("/catalog/items")
+            .addServerMetadata(new ServerMetadata("/catalog", "Catalog service"))
+            .addOperation(OperationMetadata.builder()
+                .methodName("listItems")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/items");
+        assertThat(openAPI.getPaths()).doesNotContainKey("/catalog/items");
+        assertThat(openAPI.getServers()).extracting(Server::getUrl).contains("/catalog");
+    }
+
+    @Test
+    void shouldPreferLongestServerPathPrefixWhenStripping() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addServer(ServerConfig.builder()
+                .url("/api")
+                .description("API root")
+                .build())
+            .stripServerPathPrefix(true)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("VersionedEndpoint")
+            .basePath("/api/v1/widgets")
+            .addServerMetadata(new ServerMetadata("/api/v1", "Versioned API"))
+            .addOperation(OperationMetadata.builder()
+                .methodName("listWidgets")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/widgets");
+        assertThat(openAPI.getPaths()).doesNotContainKey("/v1/widgets");
     }
 
     @Test

@@ -9,4 +9,3 @@ public record SmsNotification(
     String phoneNumber
 ) implements Notification {
 }
-

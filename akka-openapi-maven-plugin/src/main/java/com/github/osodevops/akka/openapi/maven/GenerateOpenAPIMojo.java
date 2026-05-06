@@ -37,7 +37,7 @@ import java.util.stream.Collectors;
  * <plugin>
  *   <groupId>sh.oso</groupId>
  *   <artifactId>akka-openapi-maven-plugin</artifactId>
- *   <version>1.1.0</version>
+ *   <version>1.2.0</version>
  *   <executions>
  *     <execution>
  *       <goals>

@@ -15,4 +15,3 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 public sealed interface Shape permits Circle, Rectangle, Triangle {
     double area();
 }
-

@@ -1,5 +1,7 @@
 package com.github.osodevops.akka.openapi.core;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -13,6 +15,7 @@ import com.github.victools.jsonschema.module.jakarta.validation.JakartaValidatio
 import com.github.victools.jsonschema.module.jakarta.validation.JakartaValidationOption;
 import io.swagger.v3.oas.models.media.*;
 
+import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -44,6 +47,7 @@ public class SchemaGenerator {
     private final com.github.victools.jsonschema.generator.SchemaGenerator jsonSchemaGenerator;
     private final ObjectMapper objectMapper;
     private final Map<String, Schema<?>> generatedSchemas;
+    private final Map<String, String> schemaNameAliases;
     private final Consumer<String> logger;
     private final Set<String> processingTypes;
 
@@ -63,6 +67,7 @@ public class SchemaGenerator {
         this.logger = Objects.requireNonNull(logger, "logger must not be null");
         this.objectMapper = new ObjectMapper();
         this.generatedSchemas = new ConcurrentHashMap<>();
+        this.schemaNameAliases = new ConcurrentHashMap<>();
         this.processingTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
         this.jsonSchemaGenerator = createJsonSchemaGenerator();
     }
@@ -143,15 +148,29 @@ public class SchemaGenerator {
             return simpleSchema;
         }
 
-        // For complex types, check if already generated
-        String typeName = getTypeName(rawClass);
-        if (generatedSchemas.containsKey(typeName)) {
-            return createReference(typeName);
+        Schema<?> containerSchema = tryContainerSchema(javaType, rawClass);
+        if (containerSchema != null) {
+            return containerSchema;
         }
+
+        String typeName = getTypeName(rawClass);
 
         // Check for circular reference
         if (processingTypes.contains(typeName)) {
             logger.accept("Circular reference detected for: " + typeName);
+            return createReference(typeName);
+        }
+
+        // Prefer explicit Jackson polymorphism over cached schemas that may have
+        // been discovered as generic $defs from another type.
+        Schema<?> polymorphicSchema = tryPolymorphicSchema(rawClass, typeName);
+        if (polymorphicSchema != null) {
+            generatedSchemas.put(typeName, polymorphicSchema);
+            return polymorphicSchema;
+        }
+
+        // For complex types, check if already generated
+        if (generatedSchemas.containsKey(typeName)) {
             return createReference(typeName);
         }
 
@@ -174,16 +193,46 @@ public class SchemaGenerator {
         return generateSchema((Type) javaClass);
     }
 
+    private Schema<?> tryContainerSchema(Type javaType, Class<?> rawClass) {
+        if (rawClass.isArray()) {
+            ArraySchema arraySchema = new ArraySchema();
+            arraySchema.setItems(resolveNestedSchema(rawClass.getComponentType()));
+            return arraySchema;
+        }
+
+        if (Collection.class.isAssignableFrom(rawClass)) {
+            ArraySchema arraySchema = new ArraySchema();
+            Type itemType = Object.class;
+            if (javaType instanceof java.lang.reflect.ParameterizedType parameterizedType
+                    && parameterizedType.getActualTypeArguments().length > 0) {
+                itemType = parameterizedType.getActualTypeArguments()[0];
+            }
+            arraySchema.setItems(resolveNestedSchema(itemType));
+            return arraySchema;
+        }
+
+        return null;
+    }
+
+    private Schema<?> resolveNestedSchema(Type nestedType) {
+        Schema<?> schema = generateSchema(nestedType);
+        if (schema == null) {
+            return new ObjectSchema();
+        }
+
+        Class<?> nestedRawClass = getRawClass(nestedType);
+        if (nestedRawClass != null) {
+            String nestedTypeName = getTypeName(nestedRawClass);
+            if (generatedSchemas.containsKey(nestedTypeName)) {
+                return createReference(nestedTypeName);
+            }
+        }
+        return schema;
+    }
+
     private Schema<?> generateComplexSchema(Type javaType, Class<?> rawClass, String typeName) {
         try {
             logger.accept("Generating schema for: " + typeName);
-
-            // Check for polymorphic types with @JsonTypeInfo and @JsonSubTypes
-            Schema<?> polymorphicSchema = tryPolymorphicSchema(rawClass, typeName);
-            if (polymorphicSchema != null) {
-                generatedSchemas.put(typeName, polymorphicSchema);
-                return polymorphicSchema;
-            }
 
             // Generate JSON Schema using victools
             ObjectNode jsonSchema = jsonSchemaGenerator.generateSchema(javaType);
@@ -211,7 +260,6 @@ public class SchemaGenerator {
      * @param typeName the schema name for this type
      * @return a composed schema with oneOf/discriminator, or null if not polymorphic
      */
-    @SuppressWarnings("unchecked")
     private Schema<?> tryPolymorphicSchema(Class<?> rawClass, String typeName) {
         // Look up annotations by class identity first, then by name for cross-classloader support
         JsonTypeInfo typeInfo = rawClass.getAnnotation(JsonTypeInfo.class);
@@ -226,62 +274,14 @@ public class SchemaGenerator {
             return null;
         }
 
-        logger.accept("Detected polymorphic type: " + typeName +
-            " with " + subTypes.value().length + " subtypes");
-
-        String discriminatorProperty = typeInfo.property();
-
-        // Build oneOf references and discriminator mapping
-        List<Schema> oneOfSchemas = new ArrayList<>();
-        Map<String, String> discriminatorMapping = new LinkedHashMap<>();
-
+        List<PolymorphicSubtype> polymorphicSubtypes = new ArrayList<>();
         for (JsonSubTypes.Type subType : subTypes.value()) {
             Class<?> subClass = subType.value();
-            String subTypeName = subClass.getSimpleName();
-            String discriminatorValue = subType.name();
-
-            // Generate schema for each subtype using victools directly,
-            // with a reflection-based fallback for records
-            if (!generatedSchemas.containsKey(subTypeName)) {
-                try {
-                    ObjectNode subJsonSchema = jsonSchemaGenerator.generateSchema(subClass);
-                    Schema<?> subSchema = convertJsonSchemaToOpenApi(subJsonSchema, subTypeName);
-                    if (subSchema instanceof ObjectSchema &&
-                        (subSchema.getProperties() == null || subSchema.getProperties().isEmpty())) {
-                        Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
-                        if (reflectionSchema != null) {
-                            generatedSchemas.put(subTypeName, reflectionSchema);
-                        } else if (subSchema != null) {
-                            generatedSchemas.put(subTypeName, subSchema);
-                        }
-                    } else if (subSchema != null) {
-                        generatedSchemas.put(subTypeName, subSchema);
-                    }
-                } catch (Exception e) {
-                    logger.accept("Warning: could not generate schema for subtype " +
-                        subTypeName + " via victools, trying reflection: " + e.getMessage());
-                    Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
-                    generatedSchemas.put(subTypeName,
-                        reflectionSchema != null ? reflectionSchema : new ObjectSchema());
-                }
-            }
-
-            Schema<?> ref = new Schema<>();
-            ref.set$ref("#/components/schemas/" + subTypeName);
-            oneOfSchemas.add(ref);
-            discriminatorMapping.put(discriminatorValue, "#/components/schemas/" + subTypeName);
+            polymorphicSubtypes.add(new PolymorphicSubtype(
+                subClass, resolveDiscriminatorValue(subType.name(), subClass)));
         }
 
-        // Build the composed schema
-        ComposedSchema composedSchema = new ComposedSchema();
-        composedSchema.setOneOf(oneOfSchemas);
-
-        Discriminator discriminator = new Discriminator();
-        discriminator.setPropertyName(discriminatorProperty);
-        discriminator.setMapping(discriminatorMapping);
-        composedSchema.setDiscriminator(discriminator);
-
-        return composedSchema;
+        return buildPolymorphicSchema(typeName, typeInfo.property(), polymorphicSubtypes, false);
     }
 
     /**
@@ -289,7 +289,6 @@ public class SchemaGenerator {
      * This handles the cross-classloader scenario where annotation classes loaded by the
      * plugin classloader differ from those loaded by the project classloader.
      */
-    @SuppressWarnings("unchecked")
     private Schema<?> tryPolymorphicSchemaByReflection(Class<?> rawClass, String typeName) {
         try {
             java.lang.annotation.Annotation typeInfoAnn = null;
@@ -323,8 +322,7 @@ public class SchemaGenerator {
             logger.accept("Detected polymorphic type (via reflection): " + typeName +
                 " with " + subTypeArray.length + " subtypes");
 
-            List<Schema> oneOfSchemas = new ArrayList<>();
-            Map<String, String> discriminatorMapping = new LinkedHashMap<>();
+            List<PolymorphicSubtype> polymorphicSubtypes = new ArrayList<>();
 
             for (Object subTypeObj : subTypeArray) {
                 // Each element is a @JsonSubTypes.Type annotation
@@ -332,57 +330,136 @@ public class SchemaGenerator {
                 java.lang.reflect.Method subNameMethod = subTypeObj.getClass().getMethod("name");
 
                 Class<?> subClass = (Class<?>) subValueMethod.invoke(subTypeObj);
-                String discriminatorValue = (String) subNameMethod.invoke(subTypeObj);
-                String subTypeName = subClass.getSimpleName();
-
-                // Generate schema for each subtype using victools directly,
-                // with a reflection-based fallback for records
-                if (!generatedSchemas.containsKey(subTypeName)) {
-                    try {
-                        ObjectNode subJsonSchema = jsonSchemaGenerator.generateSchema(subClass);
-                        Schema<?> subSchema = convertJsonSchemaToOpenApi(subJsonSchema, subTypeName);
-                        // If victools returns an empty object schema, try reflection-based generation
-                        if (subSchema instanceof ObjectSchema &&
-                            (subSchema.getProperties() == null || subSchema.getProperties().isEmpty())) {
-                            Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
-                            if (reflectionSchema != null) {
-                                generatedSchemas.put(subTypeName, reflectionSchema);
-                            } else if (subSchema != null) {
-                                generatedSchemas.put(subTypeName, subSchema);
-                            }
-                        } else if (subSchema != null) {
-                            generatedSchemas.put(subTypeName, subSchema);
-                        }
-                    } catch (Exception e) {
-                        logger.accept("Warning: could not generate schema for subtype " +
-                            subTypeName + " via victools, trying reflection: " + e.getMessage());
-                        Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
-                        generatedSchemas.put(subTypeName,
-                            reflectionSchema != null ? reflectionSchema : new ObjectSchema());
-                    }
-                }
-
-                Schema<?> ref = new Schema<>();
-                ref.set$ref("#/components/schemas/" + subTypeName);
-                oneOfSchemas.add(ref);
-                discriminatorMapping.put(discriminatorValue, "#/components/schemas/" + subTypeName);
+                String declaredName = (String) subNameMethod.invoke(subTypeObj);
+                polymorphicSubtypes.add(new PolymorphicSubtype(
+                    subClass, resolveDiscriminatorValue(declaredName, subClass)));
             }
 
-            ComposedSchema composedSchema = new ComposedSchema();
-            composedSchema.setOneOf(oneOfSchemas);
-
-            Discriminator discriminator = new Discriminator();
-            discriminator.setPropertyName(discriminatorProperty);
-            discriminator.setMapping(discriminatorMapping);
-            composedSchema.setDiscriminator(discriminator);
-
-            return composedSchema;
+            return buildPolymorphicSchema(typeName, discriminatorProperty, polymorphicSubtypes, true);
 
         } catch (Exception e) {
             logger.accept("Warning: reflection-based polymorphic detection failed for " +
                 typeName + ": " + e.getMessage());
             return null;
         }
+    }
+
+    private Schema<?> buildPolymorphicSchema(
+            String typeName,
+            String discriminatorProperty,
+            List<PolymorphicSubtype> subTypes,
+            boolean detectedByReflection) {
+        if (discriminatorProperty == null || discriminatorProperty.isBlank() || subTypes.isEmpty()) {
+            return null;
+        }
+
+        String detectionMode = detectedByReflection ? " (via reflection)" : "";
+        logger.accept("Detected polymorphic type" + detectionMode + ": " + typeName
+            + " with " + subTypes.size() + " subtypes");
+
+        List<Schema> oneOfSchemas = new ArrayList<>();
+        Map<String, String> discriminatorMapping = new LinkedHashMap<>();
+
+        for (PolymorphicSubtype subType : subTypes) {
+            String subTypeName = getTypeName(subType.subClass());
+            Schema<?> subSchema = generatedSchemas.get(subTypeName);
+            if (subSchema == null) {
+                subSchema = generateSubtypeSchema(
+                    subType.subClass(), subTypeName, discriminatorProperty, subType.discriminatorValue());
+            } else {
+                ensureDiscriminatorProperty(subSchema, discriminatorProperty, subType.discriminatorValue());
+            }
+
+            Schema<?> ref = new Schema<>();
+            ref.set$ref("#/components/schemas/" + subTypeName);
+            oneOfSchemas.add(ref);
+            discriminatorMapping.put(
+                subType.discriminatorValue(), "#/components/schemas/" + subTypeName);
+        }
+
+        ComposedSchema composedSchema = new ComposedSchema();
+        composedSchema.setOneOf(oneOfSchemas);
+
+        Discriminator discriminator = new Discriminator();
+        discriminator.setPropertyName(discriminatorProperty);
+        discriminator.setMapping(discriminatorMapping);
+        composedSchema.setDiscriminator(discriminator);
+
+        return composedSchema;
+    }
+
+    private Schema<?> generateSubtypeSchema(
+            Class<?> subClass,
+            String subTypeName,
+            String discriminatorProperty,
+            String discriminatorValue) {
+        Schema<?> subSchema;
+        try {
+            ObjectNode subJsonSchema = jsonSchemaGenerator.generateSchema(subClass);
+            subSchema = convertJsonSchemaToOpenApi(subJsonSchema, subTypeName);
+            if (isEmptyObjectSchema(subSchema) || subSchema.get$ref() != null) {
+                Schema<?> reflectionSchema = generateSchemaByReflection(subClass, subTypeName);
+                if (reflectionSchema != null) {
+                    subSchema = reflectionSchema;
+                }
+            }
+        } catch (Exception e) {
+            logger.accept("Warning: could not generate schema for subtype " +
+                subTypeName + " via victools, trying reflection: " + e.getMessage());
+            subSchema = generateSchemaByReflection(subClass, subTypeName);
+        }
+
+        if (subSchema == null) {
+            subSchema = new ObjectSchema();
+        }
+        ensureDiscriminatorProperty(subSchema, discriminatorProperty, discriminatorValue);
+        generatedSchemas.put(subTypeName, subSchema);
+        return subSchema;
+    }
+
+    private boolean isEmptyObjectSchema(Schema<?> schema) {
+        return schema instanceof ObjectSchema
+            && (schema.getProperties() == null || schema.getProperties().isEmpty());
+    }
+
+    private void ensureDiscriminatorProperty(
+            Schema<?> schema, String discriminatorProperty, String discriminatorValue) {
+        if (schema == null || schema.get$ref() != null
+                || discriminatorProperty == null || discriminatorProperty.isBlank()) {
+            return;
+        }
+
+        Schema<?> discriminatorSchema = schema.getProperties() != null
+            ? schema.getProperties().get(discriminatorProperty)
+            : null;
+        if (discriminatorSchema == null) {
+            discriminatorSchema = new StringSchema();
+            schema.addProperty(discriminatorProperty, discriminatorSchema);
+        }
+
+        setSingleAllowedValue(discriminatorSchema, discriminatorValue);
+        List<String> required = schema.getRequired() != null
+            ? new ArrayList<>(schema.getRequired())
+            : new ArrayList<>();
+        if (!required.contains(discriminatorProperty)) {
+            required.add(discriminatorProperty);
+            schema.setRequired(required);
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void setSingleAllowedValue(Schema<?> schema, String value) {
+        schema.setConst(value);
+        ((Schema) schema).setEnum(Collections.singletonList(value));
+    }
+
+    private String resolveDiscriminatorValue(String declaredName, Class<?> subClass) {
+        return declaredName != null && !declaredName.isBlank()
+            ? declaredName
+            : getTypeName(subClass);
+    }
+
+    private record PolymorphicSubtype(Class<?> subClass, String discriminatorValue) {
     }
 
     /**
@@ -406,7 +483,11 @@ public class SchemaGenerator {
             java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
             if (components != null && components.length > 0) {
                 for (java.lang.reflect.RecordComponent component : components) {
-                    String propName = component.getName();
+                    java.lang.reflect.Method accessor = component.getAccessor();
+                    if (hasJsonIgnore(component, accessor)) {
+                        continue;
+                    }
+                    String propName = getJsonPropertyName(component.getName(), component, accessor);
                     Class<?> propType = component.getType();
                     Schema<?> propSchema = mapJavaTypeToSchema(propType, component.getGenericType());
                     if (propSchema != null) {
@@ -429,6 +510,10 @@ public class SchemaGenerator {
                     propName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3);
                 }
                 if (propName != null && !propName.isBlank()) {
+                    if (hasJsonIgnore(method)) {
+                        continue;
+                    }
+                    propName = getJsonPropertyName(propName, method);
                     Schema<?> propSchema = mapJavaTypeToSchema(
                         method.getReturnType(), method.getGenericReturnType());
                     if (propSchema != null) {
@@ -445,6 +530,28 @@ public class SchemaGenerator {
                 typeName + ": " + e.getMessage());
             return null;
         }
+    }
+
+    private boolean hasJsonIgnore(AnnotatedElement... elements) {
+        for (AnnotatedElement element : elements) {
+            if (element != null && element.getAnnotation(JsonIgnore.class) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String getJsonPropertyName(String defaultName, AnnotatedElement... elements) {
+        for (AnnotatedElement element : elements) {
+            if (element == null) {
+                continue;
+            }
+            JsonProperty jsonProperty = element.getAnnotation(JsonProperty.class);
+            if (jsonProperty != null && jsonProperty.value() != null && !jsonProperty.value().isBlank()) {
+                return jsonProperty.value();
+            }
+        }
+        return defaultName;
     }
 
     /**
@@ -495,17 +602,22 @@ public class SchemaGenerator {
             return createReference(refTypeName);
         }
         return new ObjectSchema();
-    }    private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
+    }
+
+    private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
         // Extract definitions first (they may be under $defs in draft 2020-12)
-        JsonNode defs = jsonSchema.get("$defs");
-        if (defs == null) {
-            defs = jsonSchema.get("definitions");
-        }
+        JsonNode defs = getDefinitions(jsonSchema);
+        Set<String> rootAliases = new HashSet<>();
+        JsonNode rootSchema = resolveRootSchemaNode(jsonSchema, defs, rootAliases);
+        rootAliases.forEach(alias -> schemaNameAliases.put(alias, rootTypeName));
+        registerExistingSchemaAliases(defs);
 
         if (defs != null && defs.isObject()) {
             defs.fields().forEachRemaining(entry -> {
                 String defName = sanitizeSchemaName(entry.getKey());
-                if (!generatedSchemas.containsKey(defName)) {
+                if (!rootAliases.contains(defName)
+                        && !schemaNameAliases.containsKey(defName)
+                        && !generatedSchemas.containsKey(defName)) {
                     Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), defName);
                     if (defSchema != null) {
                         generatedSchemas.put(defName, defSchema);
@@ -515,7 +627,102 @@ public class SchemaGenerator {
         }
 
         // Convert the main schema
-        return convertJsonNodeToSchema(jsonSchema, rootTypeName);
+        return convertJsonNodeToSchema(rootSchema, rootTypeName);
+    }
+
+    private JsonNode getDefinitions(JsonNode jsonSchema) {
+        JsonNode defs = jsonSchema.get("$defs");
+        return defs != null ? defs : jsonSchema.get("definitions");
+    }
+
+    private void registerExistingSchemaAliases(JsonNode defs) {
+        if (defs == null || !defs.isObject()) {
+            return;
+        }
+
+        Iterator<Map.Entry<String, JsonNode>> fields = defs.fields();
+        while (fields.hasNext()) {
+            String defName = sanitizeSchemaName(fields.next().getKey());
+            String existingSchemaName = findExistingSchemaName(defName);
+            if (existingSchemaName != null && !existingSchemaName.equals(defName)) {
+                schemaNameAliases.put(defName, existingSchemaName);
+            }
+        }
+    }
+
+    private String findExistingSchemaName(String schemaName) {
+        String alias = schemaNameAliases.get(schemaName);
+        if (alias != null || generatedSchemas.containsKey(schemaName)) {
+            return alias != null ? alias : schemaName;
+        }
+
+        String baseName = stripNumericSuffix(schemaName);
+        return baseName != null && generatedSchemas.containsKey(baseName) ? baseName : null;
+    }
+
+    private String stripNumericSuffix(String schemaName) {
+        int dashIndex = schemaName.lastIndexOf('-');
+        if (dashIndex <= 0 || dashIndex == schemaName.length() - 1) {
+            return null;
+        }
+        for (int i = dashIndex + 1; i < schemaName.length(); i++) {
+            if (!Character.isDigit(schemaName.charAt(i))) {
+                return null;
+            }
+        }
+        return schemaName.substring(0, dashIndex);
+    }
+
+    private JsonNode resolveRootSchemaNode(JsonNode jsonSchema, JsonNode defs, Set<String> rootAliases) {
+        JsonNode current = jsonSchema;
+        Set<String> visitedRefs = new HashSet<>();
+
+        while (current != null && current.has("$ref")) {
+            String refName = extractRawRefName(current.get("$ref").asText());
+            if (refName == null || !visitedRefs.add(refName)) {
+                break;
+            }
+
+            JsonNode referenced = findDefinition(defs, refName);
+            if (referenced == null) {
+                break;
+            }
+
+            rootAliases.add(sanitizeSchemaName(refName));
+            current = referenced;
+        }
+
+        return current != null ? current : jsonSchema;
+    }
+
+    private JsonNode findDefinition(JsonNode defs, String refName) {
+        if (defs == null || !defs.isObject() || refName == null) {
+            return null;
+        }
+        if (defs.has(refName)) {
+            return defs.get(refName);
+        }
+
+        String sanitizedRefName = sanitizeSchemaName(refName);
+        Iterator<Map.Entry<String, JsonNode>> fields = defs.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> entry = fields.next();
+            if (sanitizedRefName.equals(sanitizeSchemaName(entry.getKey()))) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private String extractRawRefName(String ref) {
+        if (ref == null || ref.isEmpty()) {
+            return null;
+        }
+        int lastSlash = ref.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < ref.length() - 1) {
+            return ref.substring(lastSlash + 1);
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -719,7 +926,12 @@ public class SchemaGenerator {
             }
         }
 
-        return refName != null ? sanitizeSchemaName(refName) : null;
+        return refName != null ? canonicalSchemaName(refName) : null;
+    }
+
+    private String canonicalSchemaName(String name) {
+        String sanitizedName = sanitizeSchemaName(name);
+        return schemaNameAliases.getOrDefault(sanitizedName, sanitizedName);
     }
 
     /**
@@ -823,6 +1035,7 @@ public class SchemaGenerator {
      */
     public void clearSchemas() {
         generatedSchemas.clear();
+        schemaNameAliases.clear();
     }
 
     /**

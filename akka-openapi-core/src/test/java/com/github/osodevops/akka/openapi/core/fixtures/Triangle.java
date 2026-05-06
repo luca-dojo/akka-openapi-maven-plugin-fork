@@ -9,4 +9,3 @@ public record Triangle(double base, double height) implements Shape {
         return 0.5 * base * height;
     }
 }
-

@@ -67,4 +67,3 @@ public class NotificationEndpoint {
         return List.of();
     }
 }
-

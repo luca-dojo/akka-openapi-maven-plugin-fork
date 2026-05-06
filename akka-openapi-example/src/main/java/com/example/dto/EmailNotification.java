@@ -10,4 +10,3 @@ public record EmailNotification(
     String fromAddress
 ) implements Notification {
 }
-

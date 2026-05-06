@@ -102,7 +102,10 @@ public class OpenAPIModelBuilder {
                 annotationInfo = endpoint.getInfoMetadata();
             }
             annotationServers.addAll(endpoint.getServerMetadata());
-            addEndpointPaths(paths, endpoint);
+        }
+
+        for (EndpointMetadata endpoint : endpoints) {
+            addEndpointPaths(paths, endpoint, annotationServers);
         }
 
         // Build Info section (annotation values override config when non-empty)
@@ -289,13 +292,13 @@ public class OpenAPIModelBuilder {
             .collect(Collectors.toList());
     }
 
-    private void addEndpointPaths(Paths paths, EndpointMetadata endpoint) {
+    private void addEndpointPaths(Paths paths, EndpointMetadata endpoint, List<ServerMetadata> annotationServers) {
         for (OperationMetadata operation : endpoint.getOperations()) {
             String fullPath = normalizePath(endpoint.getBasePath(), operation.getPath());
 
             // Strip server path prefix if configured
             if (config.isStripServerPathPrefix()) {
-                fullPath = stripServerPathPrefix(fullPath);
+                fullPath = stripServerPathPrefix(fullPath, annotationServers);
             }
 
             PathItem pathItem = paths.get(fullPath);
@@ -318,31 +321,54 @@ public class OpenAPIModelBuilder {
      * @param fullPath the full endpoint path
      * @return the path with server prefix removed
      */
-    private String stripServerPathPrefix(String fullPath) {
-        for (ServerConfig sc : config.getServers()) {
-            String serverUrl = sc.getUrl();
-            if (serverUrl == null) {
-                continue;
-            }
-            // Extract path component from server URL
-            String serverPath = extractPathFromUrl(serverUrl);
-            if (serverPath != null && !serverPath.isEmpty() && !"/".equals(serverPath)) {
-                // Remove trailing slash from server path
-                String normalizedServerPath = serverPath.endsWith("/")
-                    ? serverPath.substring(0, serverPath.length() - 1)
-                    : serverPath;
-                if (fullPath.startsWith(normalizedServerPath + "/") || fullPath.equals(normalizedServerPath)) {
-                    String stripped = fullPath.substring(normalizedServerPath.length());
-                    if (stripped.isEmpty()) {
-                        stripped = "/";
-                    }
-                    logger.accept("Stripped server path prefix '" + normalizedServerPath + "' from: "
-                        + fullPath + " -> " + stripped);
-                    return stripped;
+    private String stripServerPathPrefix(String fullPath, List<ServerMetadata> annotationServers) {
+        for (String normalizedServerPath : getServerPathPrefixes(annotationServers)) {
+            if (fullPath.startsWith(normalizedServerPath + "/") || fullPath.equals(normalizedServerPath)) {
+                String stripped = fullPath.substring(normalizedServerPath.length());
+                if (stripped.isEmpty()) {
+                    stripped = "/";
                 }
+                logger.accept("Stripped server path prefix '" + normalizedServerPath + "' from: "
+                    + fullPath + " -> " + stripped);
+                return stripped;
             }
         }
         return fullPath;
+    }
+
+    private List<String> getServerPathPrefixes(List<ServerMetadata> annotationServers) {
+        Set<String> serverPaths = new LinkedHashSet<>();
+
+        for (ServerConfig sc : config.getServers()) {
+            addServerPathPrefix(serverPaths, sc.getUrl());
+        }
+        for (ServerMetadata sm : annotationServers) {
+            addServerPathPrefix(serverPaths, sm.getUrl());
+        }
+
+        return serverPaths.stream()
+            .sorted(Comparator.comparingInt(String::length).reversed())
+            .collect(Collectors.toList());
+    }
+
+    private void addServerPathPrefix(Set<String> serverPaths, String serverUrl) {
+        if (serverUrl == null) {
+            return;
+        }
+
+        String serverPath = extractPathFromUrl(serverUrl);
+        if (serverPath == null || serverPath.isBlank() || "/".equals(serverPath)) {
+            return;
+        }
+        if (!serverPath.startsWith("/")) {
+            serverPath = "/" + serverPath;
+        }
+        while (serverPath.length() > 1 && serverPath.endsWith("/")) {
+            serverPath = serverPath.substring(0, serverPath.length() - 1);
+        }
+        if (!"/".equals(serverPath)) {
+            serverPaths.add(serverPath);
+        }
     }
 
     /**
