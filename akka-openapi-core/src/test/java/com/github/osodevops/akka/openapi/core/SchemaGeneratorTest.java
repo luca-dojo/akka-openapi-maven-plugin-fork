@@ -1,5 +1,8 @@
 package com.github.osodevops.akka.openapi.core;
 
+import com.fasterxml.jackson.annotation.JsonValue;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.osodevops.akka.openapi.core.fixtures.*;
 import io.swagger.v3.oas.models.media.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -282,6 +285,118 @@ class SchemaGeneratorTest {
         assertThat(addressesSchema).isInstanceOf(ArraySchema.class);
     }
 
+    @Test
+    void shouldUnwrapOptionalFieldsWithoutCreatingOptionalComponents() {
+        generator.generateSchema(OptionalHolder.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        Schema<?> holderSchema = schemas.get("OptionalHolder");
+
+        assertThat(holderSchema.getRequired()).isNullOrEmpty();
+        assertThat(holderSchema.getProperties().get("maybeText")).isInstanceOf(StringSchema.class);
+        assertThat(holderSchema.getProperties().get("maybeTitle").get$ref())
+            .isEqualTo("#/components/schemas/JsonStringValue");
+        assertThat(holderSchema.getProperties().get("maybePlainRecord").get$ref())
+            .isEqualTo("#/components/schemas/PlainRecord");
+        assertThat(schemas).doesNotContainKeys(
+            "Optional", "JsonStringValue-nullable", "PlainRecord-nullable");
+    }
+
+    @Test
+    void shouldUnwrapTopLevelOptionalTypes() {
+        Type optionalUuid = new java.lang.reflect.ParameterizedType() {
+            @Override
+            public Type[] getActualTypeArguments() {
+                return new Type[] { UUID.class };
+            }
+
+            @Override
+            public Type getRawType() {
+                return Optional.class;
+            }
+
+            @Override
+            public Type getOwnerType() {
+                return null;
+            }
+        };
+
+        Schema<?> schema = generator.generateSchema(optionalUuid);
+
+        assertThat(schema).isInstanceOf(UUIDSchema.class);
+    }
+
+    @Test
+    void shouldRepresentJsonValueWrappersAsUnderlyingScalarSchemas() {
+        generator.generateSchema(JsonStringValue.class);
+        generator.generateSchema(JsonLongValue.class);
+        generator.generateSchema(JsonUuidValue.class);
+        generator.generateSchema(JsonDateValue.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        assertThat(schemas.get("JsonStringValue")).isInstanceOf(StringSchema.class);
+        assertThat(schemas.get("JsonLongValue")).isInstanceOf(IntegerSchema.class);
+        assertThat(schemas.get("JsonLongValue").getFormat()).isEqualTo("int64");
+        assertThat(schemas.get("JsonUuidValue")).isInstanceOf(UUIDSchema.class);
+        assertThat(schemas.get("JsonDateValue")).isInstanceOf(DateSchema.class);
+    }
+
+    @Test
+    void shouldUnwrapOnlyNullableAnyOfAndOneOfCompositions() throws Exception {
+        Schema<?> anyOfSchema = convertJsonNodeToOpenApiSchema("""
+            {
+              "description": "nullable string",
+              "anyOf": [
+                { "type": "string" },
+                { "type": "null" }
+              ]
+            }
+            """);
+        Schema<?> oneOfSchema = convertJsonNodeToOpenApiSchema("""
+            {
+              "oneOf": [
+                { "type": "null" },
+                { "type": "integer", "format": "int64" }
+              ]
+            }
+            """);
+
+        assertThat(anyOfSchema).isInstanceOf(StringSchema.class);
+        assertThat(anyOfSchema.getDescription()).isEqualTo("nullable string");
+        assertThat(oneOfSchema).isInstanceOf(IntegerSchema.class);
+        assertThat(oneOfSchema.getFormat()).isEqualTo("int64");
+    }
+
+    @Test
+    void shouldPreserveRealAnyOfAndOneOfCompositions() throws Exception {
+        Schema<?> anyOfSchema = convertJsonNodeToOpenApiSchema("""
+            {
+              "anyOf": [
+                { "type": "string" },
+                { "type": "integer", "format": "int64" }
+              ]
+            }
+            """);
+        Schema<?> oneOfSchema = convertJsonNodeToOpenApiSchema("""
+            {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "integer" },
+                { "type": "null" }
+              ]
+            }
+            """);
+
+        assertThat(anyOfSchema).isInstanceOf(ComposedSchema.class);
+        assertThat(((ComposedSchema) anyOfSchema).getAnyOf()).hasSize(2);
+        assertThat(((ComposedSchema) anyOfSchema).getAnyOf().get(0)).isInstanceOf(StringSchema.class);
+        assertThat(((ComposedSchema) anyOfSchema).getAnyOf().get(1)).isInstanceOf(IntegerSchema.class);
+
+        assertThat(oneOfSchema).isInstanceOf(ComposedSchema.class);
+        assertThat(((ComposedSchema) oneOfSchema).getOneOf()).hasSize(3);
+        assertThat(((ComposedSchema) oneOfSchema).getOneOf().get(2).getType()).isEqualTo("null");
+    }
+
     // Error handling tests
 
     @Test
@@ -468,6 +583,36 @@ class SchemaGeneratorTest {
         assertDiscriminatorProperty(schemas.get("Circle"), "shapeType", "CIRCLE");
         assertDiscriminatorProperty(schemas.get("Rectangle"), "shapeType", "RECTANGLE");
         assertDiscriminatorProperty(schemas.get("Triangle"), "shapeType", "TRIANGLE");
+    }
+
+    private Schema<?> convertJsonNodeToOpenApiSchema(String json) throws Exception {
+        JsonNode node = new ObjectMapper().readTree(json);
+        java.lang.reflect.Method method = SchemaGenerator.class.getDeclaredMethod(
+            "convertJsonNodeToSchema", JsonNode.class, String.class);
+        method.setAccessible(true);
+        return (Schema<?>) method.invoke(generator, node, "ComposedValue");
+    }
+
+    private record OptionalHolder(
+        Optional<String> maybeText,
+        Optional<JsonStringValue> maybeTitle,
+        Optional<PlainRecord> maybePlainRecord
+    ) {
+    }
+
+    private record JsonStringValue(@JsonValue String value) {
+    }
+
+    private record JsonLongValue(@JsonValue long value) {
+    }
+
+    private record JsonUuidValue(@JsonValue UUID value) {
+    }
+
+    private record JsonDateValue(@JsonValue LocalDate value) {
+    }
+
+    private record PlainRecord(String value) {
     }
 
     private void assertDiscriminatorProperty(Schema<?> schema, String propertyName, String value) {
