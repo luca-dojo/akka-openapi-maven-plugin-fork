@@ -10,8 +10,8 @@ public record EmailNotification(
     String message,
     String subject,
     String fromAddress,
-    Optional<String> title,
-    Optional<String> deviceToken
+    Optional<Title> title,
+    Optional<DeviceToken> deviceToken
 ) implements Notification {
 }
 

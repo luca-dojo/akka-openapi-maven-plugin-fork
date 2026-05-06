@@ -9,8 +9,8 @@ public record SmsNotification(
     String recipientId,
     String message,
     String phoneNumber,
-    Optional<String> title,
-    Optional<String> deviceToken
+    Optional<Title> title,
+    Optional<DeviceToken> deviceToken
 ) implements Notification {
 }
 

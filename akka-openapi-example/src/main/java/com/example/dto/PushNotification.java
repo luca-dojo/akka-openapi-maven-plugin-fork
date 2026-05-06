@@ -8,8 +8,7 @@ import java.util.Optional;
 public record PushNotification(
     String recipientId,
     String message,
-    Optional<String> title,
-    Optional<String> deviceToken
+    Optional<Title> title,
+    Optional<DeviceToken> deviceToken
 ) implements Notification {
 }
-

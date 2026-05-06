@@ -523,12 +523,18 @@ public class SchemaGenerator {
             return enumSchema;
         }
 
-        // Complex object - use $ref if already generated, otherwise ObjectSchema placeholder
+        // Complex object - use $ref if already generated, otherwise generate and store
         String refTypeName = type.getSimpleName();
-        if (generatedSchemas.containsKey(refTypeName)) {
-            return createReference(refTypeName);
+        if (!generatedSchemas.containsKey(refTypeName)) {
+            // Store placeholder first to prevent infinite recursion for circular references
+            generatedSchemas.put(refTypeName, new ObjectSchema());
+            // Try to generate schema by reflection for records and POJOs
+            Schema<?> generated = generateSchemaByReflection(type, refTypeName);
+            if (generated != null) {
+                generatedSchemas.put(refTypeName, generated);
+            }
         }
-        return new ObjectSchema();
+        return createReference(refTypeName);
     }    private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
         // Extract definitions first (they may be under $defs in draft 2020-12)
         JsonNode defs = jsonSchema.get("$defs");
