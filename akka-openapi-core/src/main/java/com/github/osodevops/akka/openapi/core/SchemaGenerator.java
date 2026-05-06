@@ -96,6 +96,51 @@ public class SchemaGenerator {
         configBuilder.with(Option.DEFINITIONS_FOR_ALL_OBJECTS);
         configBuilder.with(Option.SCHEMA_VERSION_INDICATOR);
 
+        // Unwrap Optional<T> fields and method return types to their inner type T.
+        // Without this, victools treats Optional as an opaque object.
+        configBuilder.forFields()
+            .withTargetTypeOverridesResolver(field -> {
+                com.github.victools.jsonschema.generator.TypeContext ctx =
+                    field.getContext();
+                com.fasterxml.classmate.ResolvedType resolvedType = field.getType();
+                if (Optional.class.isAssignableFrom(resolvedType.getErasedType())
+                    && resolvedType.getTypeParameters().size() == 1) {
+                    return List.of(ctx.resolve(resolvedType.getTypeParameters().get(0)));
+                }
+                return null;
+            });
+        configBuilder.forMethods()
+            .withTargetTypeOverridesResolver(method -> {
+                com.github.victools.jsonschema.generator.TypeContext ctx =
+                    method.getContext();
+                com.fasterxml.classmate.ResolvedType resolvedType = method.getType();
+                if (Optional.class.isAssignableFrom(resolvedType.getErasedType())
+                    && resolvedType.getTypeParameters().size() == 1) {
+                    return List.of(ctx.resolve(resolvedType.getTypeParameters().get(0)));
+                }
+                return null;
+            });
+
+        // Handle @JsonValue: types with a single @JsonValue-annotated member should
+        // be represented as the type of that member (e.g., record SKU(@JsonValue String value) -> string)
+        configBuilder.forTypesInGeneral()
+            .withCustomDefinitionProvider((javaType, context) -> {
+                Class<?> erasedType = javaType.getErasedType();
+                Class<?> valueType = findJsonValueType(erasedType);
+                if (valueType != null) {
+                    com.fasterxml.jackson.databind.node.ObjectNode schema =
+                        new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode();
+                    String jsonType = mapToJsonSchemaType(valueType);
+                    schema.put("type", jsonType);
+                    String format = mapToJsonSchemaFormat(valueType);
+                    if (format != null) {
+                        schema.put("format", format);
+                    }
+                    return new CustomDefinition(schema);
+                }
+                return null;
+            });
+
         // Handle date/time types
         configBuilder.forTypesInGeneral()
             .withStringFormatResolver(target -> {
@@ -477,6 +522,13 @@ public class SchemaGenerator {
     private Schema<?> generateSchemaByReflection(Class<?> clazz, String typeName) {
         try {
             logger.accept("Generating schema via reflection for: " + typeName);
+
+            // Check for @JsonValue annotation — the type serializes as the value type directly
+            Schema<?> jsonValueSchema = tryJsonValueSchema(clazz);
+            if (jsonValueSchema != null) {
+                return jsonValueSchema;
+            }
+
             ObjectSchema objectSchema = new ObjectSchema();
 
             // Java records expose components via Class.getRecordComponents()
@@ -532,6 +584,115 @@ public class SchemaGenerator {
         }
     }
 
+    /**
+     * Checks if the class has a {@code @JsonValue} annotation on any field, method, or
+     * record component, and if so returns the schema for the value type directly.
+     * This handles value-wrapper types that serialize as their inner value.
+     */
+    private Schema<?> tryJsonValueSchema(Class<?> clazz) {
+        // Check record components for @JsonValue
+        java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
+        if (components != null) {
+            for (java.lang.reflect.RecordComponent component : components) {
+                if (hasJsonValueAnnotation(component.getAccessor())) {
+                    return mapJavaTypeToSchema(component.getType(), component.getGenericType());
+                }
+            }
+        }
+
+        // Check methods for @JsonValue
+        for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
+            if (method.getParameterCount() == 0 && hasJsonValueAnnotation(method)) {
+                return mapJavaTypeToSchema(method.getReturnType(), method.getGenericReturnType());
+            }
+        }
+
+        // Check fields for @JsonValue
+        for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
+            if (hasJsonValueAnnotation(field)) {
+                return mapJavaTypeToSchema(field.getType(), field.getGenericType());
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Checks if an annotated element has a {@code @JsonValue} annotation,
+     * handling cross-classloader scenarios by checking annotation type name.
+     */
+    private boolean hasJsonValueAnnotation(java.lang.reflect.AnnotatedElement element) {
+        for (java.lang.annotation.Annotation ann : element.getAnnotations()) {
+            String annName = ann.annotationType().getName();
+            if ("com.fasterxml.jackson.annotation.JsonValue".equals(annName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Finds the type of the @JsonValue-annotated member in a class, or null if not found.
+     */
+    private Class<?> findJsonValueType(Class<?> clazz) {
+        // Check record components
+        java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
+        if (components != null) {
+            for (java.lang.reflect.RecordComponent component : components) {
+                if (hasJsonValueAnnotation(component.getAccessor()) ||
+                    hasJsonValueAnnotation(component)) {
+                    return component.getType();
+                }
+            }
+        }
+        // Check methods
+        for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
+            if (method.getParameterCount() == 0 && hasJsonValueAnnotation(method)) {
+                return method.getReturnType();
+            }
+        }
+        // Check fields
+        for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
+            if (hasJsonValueAnnotation(field)) {
+                return field.getType();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Maps a Java type to a JSON Schema type string.
+     */
+    private String mapToJsonSchemaType(Class<?> type) {
+        if (type == String.class || type == CharSequence.class || type == char.class || type == Character.class) {
+            return "string";
+        } else if (type == int.class || type == Integer.class || type == long.class || type == Long.class
+            || type == short.class || type == Short.class || type == byte.class || type == Byte.class) {
+            return "integer";
+        } else if (type == float.class || type == Float.class || type == double.class || type == Double.class) {
+            return "number";
+        } else if (type == boolean.class || type == Boolean.class) {
+            return "boolean";
+        }
+        return "string";
+    }
+
+    /**
+     * Maps a Java type to a JSON Schema format string, or null if no format applies.
+     */
+    private String mapToJsonSchemaFormat(Class<?> type) {
+        if (type == int.class || type == Integer.class) {
+            return "int32";
+        } else if (type == long.class || type == Long.class) {
+            return "int64";
+        } else if (type == float.class || type == Float.class) {
+            return "float";
+        } else if (type == double.class || type == Double.class) {
+            return "double";
+        }
+        return null;
+    }
+
     private boolean hasJsonIgnore(AnnotatedElement... elements) {
         for (AnnotatedElement element : elements) {
             if (element != null && element.getAnnotation(JsonIgnore.class) != null) {
@@ -560,12 +721,21 @@ public class SchemaGenerator {
      */
     private Schema<?> mapJavaTypeToSchema(Class<?> type, java.lang.reflect.Type genericType) {
         // Unwrap Optional<T>
-        if (Optional.class.isAssignableFrom(type) && genericType instanceof java.lang.reflect.ParameterizedType) {
-            java.lang.reflect.Type inner =
-                ((java.lang.reflect.ParameterizedType) genericType).getActualTypeArguments()[0];
-            if (inner instanceof Class<?>) {
-                return mapJavaTypeToSchema((Class<?>) inner, inner);
+        if (Optional.class.isAssignableFrom(type) ||
+            "java.util.Optional".equals(type.getName())) {
+            if (genericType instanceof java.lang.reflect.ParameterizedType pt) {
+                java.lang.reflect.Type[] args = pt.getActualTypeArguments();
+                if (args.length > 0 && args[0] instanceof Class<?> innerClass) {
+                    return mapJavaTypeToSchema(innerClass, innerClass);
+                } else if (args.length > 0 && args[0] instanceof java.lang.reflect.ParameterizedType innerPt) {
+                    Class<?> rawInner = getRawClass(innerPt);
+                    if (rawInner != null) {
+                        return mapJavaTypeToSchema(rawInner, innerPt);
+                    }
+                }
             }
+            // If we can't determine the inner type, default to string
+            return new StringSchema();
         }
 
         // Simple types
@@ -596,12 +766,30 @@ public class SchemaGenerator {
             return enumSchema;
         }
 
-        // Complex object - use $ref if already generated, otherwise ObjectSchema placeholder
+        // Complex object - use $ref if already generated, otherwise generate and store
         String refTypeName = type.getSimpleName();
-        if (generatedSchemas.containsKey(refTypeName)) {
-            return createReference(refTypeName);
+        // Check if we need to generate or upgrade the schema
+        boolean needsGeneration = !generatedSchemas.containsKey(refTypeName);
+        if (!needsGeneration) {
+            // Also regenerate if existing schema is an empty ObjectSchema (placeholder from $defs)
+            Schema<?> existing = generatedSchemas.get(refTypeName);
+            if (existing instanceof ObjectSchema &&
+                (((ObjectSchema) existing).getProperties() == null ||
+                 ((ObjectSchema) existing).getProperties().isEmpty()) &&
+                ((ObjectSchema) existing).getAdditionalProperties() == null) {
+                needsGeneration = true;
+            }
         }
-        return new ObjectSchema();
+        if (needsGeneration) {
+            // Store placeholder first to prevent infinite recursion for circular references
+            generatedSchemas.put(refTypeName, new ObjectSchema());
+            // Try to generate schema by reflection for records and POJOs
+            Schema<?> generated = generateSchemaByReflection(type, refTypeName);
+            if (generated != null) {
+                generatedSchemas.put(refTypeName, generated);
+            }
+        }
+        return createReference(refTypeName);
     }
 
     private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
@@ -619,7 +807,16 @@ public class SchemaGenerator {
                         && !schemaNameAliases.containsKey(defName)
                         && !generatedSchemas.containsKey(defName)) {
                     Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), defName);
-                    if (defSchema != null) {
+                    if (defSchema == null) {
+                        return;
+                    }
+                    // Avoid storing self-referencing schemas (e.g., from "#" circular refs)
+                    if (defSchema.get$ref() != null &&
+                        defSchema.get$ref().equals("#/components/schemas/" + defName)) {
+                        ObjectSchema objectSchema = new ObjectSchema();
+                        objectSchema.setAdditionalProperties(new ObjectSchema());
+                        generatedSchemas.put(defName, objectSchema);
+                    } else {
                         generatedSchemas.put(defName, defSchema);
                     }
                 }
@@ -741,6 +938,21 @@ public class SchemaGenerator {
             }
             // If we can't extract a proper ref name, return an object schema
             return new ObjectSchema();
+        }
+
+        // Handle anyOf / oneOf (common for nullable wrappers from victools)
+        // e.g., {"anyOf": [{"$ref": "#/$defs/Title"}, {"type": "null"}]}
+        JsonNode composedNode = node.has("anyOf") ? node.get("anyOf") :
+                                (node.has("oneOf") ? node.get("oneOf") : null);
+        if (composedNode != null && composedNode.isArray()) {
+            // Find the first non-null type entry
+            for (JsonNode entry : composedNode) {
+                if (entry.has("type") && "null".equals(entry.get("type").asText())) {
+                    continue;
+                }
+                // Return the schema for the non-null variant
+                return convertJsonNodeToSchema(entry, currentTypeName);
+            }
         }
 
         String type = node.has("type") ? node.get("type").asText() : null;
