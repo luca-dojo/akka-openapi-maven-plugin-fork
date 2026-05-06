@@ -91,6 +91,31 @@ public class SchemaGenerator {
         configBuilder.with(Option.DEFINITIONS_FOR_ALL_OBJECTS);
         configBuilder.with(Option.SCHEMA_VERSION_INDICATOR);
 
+        // Unwrap Optional<T> fields and method return types to their inner type T.
+        // Without this, victools treats Optional as an opaque object.
+        configBuilder.forFields()
+            .withTargetTypeOverridesResolver(field -> {
+                com.github.victools.jsonschema.generator.TypeContext ctx =
+                    field.getContext();
+                com.fasterxml.classmate.ResolvedType resolvedType = field.getType();
+                if (Optional.class.isAssignableFrom(resolvedType.getErasedType())
+                    && resolvedType.getTypeParameters().size() == 1) {
+                    return List.of(ctx.resolve(resolvedType.getTypeParameters().get(0)));
+                }
+                return null;
+            });
+        configBuilder.forMethods()
+            .withTargetTypeOverridesResolver(method -> {
+                com.github.victools.jsonschema.generator.TypeContext ctx =
+                    method.getContext();
+                com.fasterxml.classmate.ResolvedType resolvedType = method.getType();
+                if (Optional.class.isAssignableFrom(resolvedType.getErasedType())
+                    && resolvedType.getTypeParameters().size() == 1) {
+                    return List.of(ctx.resolve(resolvedType.getTypeParameters().get(0)));
+                }
+                return null;
+            });
+
         // Handle date/time types
         configBuilder.forTypesInGeneral()
             .withStringFormatResolver(target -> {
@@ -453,12 +478,21 @@ public class SchemaGenerator {
      */
     private Schema<?> mapJavaTypeToSchema(Class<?> type, java.lang.reflect.Type genericType) {
         // Unwrap Optional<T>
-        if (Optional.class.isAssignableFrom(type) && genericType instanceof java.lang.reflect.ParameterizedType) {
-            java.lang.reflect.Type inner =
-                ((java.lang.reflect.ParameterizedType) genericType).getActualTypeArguments()[0];
-            if (inner instanceof Class<?>) {
-                return mapJavaTypeToSchema((Class<?>) inner, inner);
+        if (Optional.class.isAssignableFrom(type) ||
+            "java.util.Optional".equals(type.getName())) {
+            if (genericType instanceof java.lang.reflect.ParameterizedType pt) {
+                java.lang.reflect.Type[] args = pt.getActualTypeArguments();
+                if (args.length > 0 && args[0] instanceof Class<?> innerClass) {
+                    return mapJavaTypeToSchema(innerClass, innerClass);
+                } else if (args.length > 0 && args[0] instanceof java.lang.reflect.ParameterizedType innerPt) {
+                    Class<?> rawInner = getRawClass(innerPt);
+                    if (rawInner != null) {
+                        return mapJavaTypeToSchema(rawInner, innerPt);
+                    }
+                }
             }
+            // If we can't determine the inner type, default to string
+            return new StringSchema();
         }
 
         // Simple types
