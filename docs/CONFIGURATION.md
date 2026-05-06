@@ -8,7 +8,7 @@ This document describes all configuration options available for the Akka OpenAPI
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
     <configuration>
         <!-- Options here -->
     </configuration>
@@ -122,6 +122,10 @@ Servers are defined as a list of `<server>` elements:
 | `url` | String | Yes | Server URL (can be relative or absolute) |
 | `description` | String | No | Human-readable description |
 
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `stripServerPathPrefix` | boolean | `false` | Remove the configured server URL path prefix from generated endpoint paths |
+
 **Example:**
 ```xml
 <configuration>
@@ -139,8 +143,14 @@ Servers are defined as a list of `<server>` elements:
             <description>Local Development</description>
         </server>
     </servers>
+    <stripServerPathPrefix>true</stripServerPathPrefix>
 </configuration>
 ```
+
+When `stripServerPathPrefix` is enabled and the server URL is
+`https://api.example.com/v1`, an endpoint annotated as
+`@HttpEndpoint("/v1/customers")` is emitted as `/customers`. This is useful when
+the server URL already carries the deployment prefix.
 
 ## Command Line Properties
 
@@ -174,6 +184,7 @@ mvn compile -Dopenapi.outputFormat=json
 | `licenseName` | `openapi.licenseName` |
 | `licenseUrl` | `openapi.licenseUrl` |
 | `termsOfService` | `openapi.termsOfService` |
+| `stripServerPathPrefix` | `openapi.stripServerPathPrefix` |
 
 ## Full Example
 
@@ -183,7 +194,7 @@ Here's a complete configuration example:
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
     <configuration>
         <!-- Output Settings -->
         <outputFile>${project.build.directory}/openapi.yaml</outputFile>
@@ -216,11 +227,11 @@ Here's a complete configuration example:
         <!-- Server Definitions -->
         <servers>
             <server>
-                <url>https://api.example.com</url>
+                <url>https://api.example.com/v1</url>
                 <description>Production</description>
             </server>
             <server>
-                <url>https://api-staging.example.com</url>
+                <url>https://api-staging.example.com/v1</url>
                 <description>Staging</description>
             </server>
             <server>
@@ -228,6 +239,7 @@ Here's a complete configuration example:
                 <description>Local Development</description>
             </server>
         </servers>
+        <stripServerPathPrefix>true</stripServerPathPrefix>
     </configuration>
     <executions>
         <execution>

@@ -12,6 +12,9 @@ Generate OpenAPI 3.1 specifications from [Akka SDK](https://doc.akka.io/sdk/) HT
 - **Compile-Time Generation** - No runtime overhead, perfect for serverless/containers
 - **OpenAPI 3.1** - Latest specification with full JSON Schema support
 - **Automatic Schema Generation** - POJOs converted to JSON schemas automatically
+- **Polymorphic Schemas** - Jackson `@JsonTypeInfo` / `@JsonSubTypes` types become `oneOf` schemas with discriminators
+- **Deterministic Output** - Paths and component schemas are sorted for stable diffs
+- **Server Path Cleanup** - Optional server path prefix stripping avoids duplicated path segments
 - **JavaDoc Extraction** - Uses your existing documentation for descriptions
 - **Validation** - Ensures generated specs are valid before writing
 
@@ -25,7 +28,7 @@ Add the plugin to your `pom.xml`:
         <plugin>
             <groupId>sh.oso</groupId>
             <artifactId>akka-openapi-maven-plugin</artifactId>
-            <version>1.2.0</version>
+            <version>1.3.0</version>
             <executions>
                 <execution>
                     <goals>
@@ -153,7 +156,7 @@ components:
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
     <configuration>
         <!-- Output settings -->
         <outputFile>${project.build.directory}/openapi.yaml</outputFile>
@@ -172,10 +175,11 @@ components:
         <!-- Server definitions -->
         <servers>
             <server>
-                <url>https://api.example.com</url>
+                <url>https://api.example.com/v1</url>
                 <description>Production</description>
             </server>
         </servers>
+        <stripServerPathPrefix>true</stripServerPathPrefix>
 
         <!-- Security schemes (apiKey only; see Security Schemes section below) -->
         <security>
@@ -237,6 +241,35 @@ Notes:
   sufficient), not an AND.
 - Set `<includeSecuritySchemes>false</includeSecuritySchemes>` to suppress
   emission without removing the `<security>` block.
+
+### Polymorphic Schemas
+
+Types annotated with Jackson `@JsonTypeInfo` and `@JsonSubTypes` are emitted as
+OpenAPI `oneOf` schemas with discriminator mappings:
+
+```java
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "channel")
+@JsonSubTypes({
+    @JsonSubTypes.Type(value = EmailNotification.class, name = "EMAIL"),
+    @JsonSubTypes.Type(value = SmsNotification.class, name = "SMS")
+})
+public sealed interface Notification permits EmailNotification, SmsNotification {
+}
+```
+
+Generates:
+
+```yaml
+Notification:
+  discriminator:
+    propertyName: channel
+    mapping:
+      EMAIL: "#/components/schemas/EmailNotification"
+      SMS: "#/components/schemas/SmsNotification"
+  oneOf:
+    - $ref: "#/components/schemas/EmailNotification"
+    - $ref: "#/components/schemas/SmsNotification"
+```
 
 ## Supported Akka SDK Annotations
 
