@@ -16,6 +16,7 @@ import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
+import io.swagger.v3.oas.models.servers.Server;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -946,5 +947,261 @@ class OpenAPIModelBuilderTest {
         if (openAPI.getComponents() != null) {
             assertThat(openAPI.getComponents().getSecuritySchemes()).isNull();
         }
+    }
+
+    @Test
+    void shouldSortPathsAlphabeticallyForDeterministicOutput() {
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("ItemEndpoint")
+            .basePath("/items")
+            .addTag("Items")
+            .addOperation(OperationMetadata.builder()
+                .methodName("deleteItem")
+                .httpMethod(HttpMethod.DELETE)
+                .path("/zebra")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("204")
+                    .description("Deleted")
+                    .build())
+                .build())
+            .addOperation(OperationMetadata.builder()
+                .methodName("getAlpha")
+                .httpMethod(HttpMethod.GET)
+                .path("/alpha")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .addOperation(OperationMetadata.builder()
+                .methodName("getMango")
+                .httpMethod(HttpMethod.GET)
+                .path("/mango")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        List<String> pathKeys = new ArrayList<>(openAPI.getPaths().keySet());
+        assertThat(pathKeys).containsExactly("/items/alpha", "/items/mango", "/items/zebra");
+    }
+
+    @Test
+    void shouldStripServerPathPrefixFromEndpointPaths() {
+        ServerConfig serverConfig = ServerConfig.builder()
+            .url("/inventory")
+            .description("Relative Server URL")
+            .build();
+
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addServer(serverConfig)
+            .stripServerPathPrefix(true)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("WarehouseEndpoint")
+            .basePath("/inventory/warehouses")
+            .addTag("Warehouses")
+            .addOperation(OperationMetadata.builder()
+                .methodName("listWarehouses")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .addOperation(OperationMetadata.builder()
+                .methodName("getWarehouse")
+                .httpMethod(HttpMethod.GET)
+                .path("/{id}")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/warehouses");
+        assertThat(openAPI.getPaths()).containsKey("/warehouses/{id}");
+        assertThat(openAPI.getPaths()).doesNotContainKey("/inventory/warehouses");
+    }
+
+    @Test
+    void shouldNotStripServerPathPrefixWhenDisabled() {
+        ServerConfig serverConfig = ServerConfig.builder()
+            .url("/inventory")
+            .description("Relative Server URL")
+            .build();
+
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addServer(serverConfig)
+            .stripServerPathPrefix(false)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("WarehouseEndpoint")
+            .basePath("/inventory/warehouses")
+            .addTag("Warehouses")
+            .addOperation(OperationMetadata.builder()
+                .methodName("listWarehouses")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/inventory/warehouses");
+    }
+
+    @Test
+    void shouldStripServerPathPrefixFromAbsoluteUrl() {
+        ServerConfig serverConfig = ServerConfig.builder()
+            .url("https://api.example.com/billing")
+            .description("Production")
+            .build();
+
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addServer(serverConfig)
+            .stripServerPathPrefix(true)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("InvoiceEndpoint")
+            .basePath("/billing/invoices")
+            .addTag("Invoices")
+            .addOperation(OperationMetadata.builder()
+                .methodName("listInvoices")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/invoices");
+        assertThat(openAPI.getPaths()).doesNotContainKey("/billing/invoices");
+    }
+
+    @Test
+    void shouldStripAnnotationServerPathPrefixFromEndpointPaths() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .stripServerPathPrefix(true)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("CatalogEndpoint")
+            .basePath("/catalog/items")
+            .addServerMetadata(new ServerMetadata("/catalog", "Catalog service"))
+            .addOperation(OperationMetadata.builder()
+                .methodName("listItems")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/items");
+        assertThat(openAPI.getPaths()).doesNotContainKey("/catalog/items");
+        assertThat(openAPI.getServers()).extracting(Server::getUrl).contains("/catalog");
+    }
+
+    @Test
+    void shouldPreferLongestServerPathPrefixWhenStripping() {
+        config = PluginConfiguration.builder()
+            .apiTitle("Test API")
+            .apiVersion("1.0.0")
+            .addServer(ServerConfig.builder()
+                .url("/api")
+                .description("API root")
+                .build())
+            .stripServerPathPrefix(true)
+            .build();
+
+        builder = new OpenAPIModelBuilder(config, logMessages::add);
+
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("VersionedEndpoint")
+            .basePath("/api/v1/widgets")
+            .addServerMetadata(new ServerMetadata("/api/v1", "Versioned API"))
+            .addOperation(OperationMetadata.builder()
+                .methodName("listWidgets")
+                .httpMethod(HttpMethod.GET)
+                .path("")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        assertThat(openAPI.getPaths()).containsKey("/widgets");
+        assertThat(openAPI.getPaths()).doesNotContainKey("/v1/widgets");
+    }
+
+    @Test
+    void shouldUseCustomMediaTypeOnResponse() {
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("EventEndpoint")
+            .basePath("/events")
+            .addTag("Events")
+            .addOperation(OperationMetadata.builder()
+                .methodName("subscribe")
+                .httpMethod(HttpMethod.GET)
+                .path("/stream")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Event stream established")
+                    .mediaType("text/event-stream")
+                    .responseType(String.class)
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        Operation operation = openAPI.getPaths().get("/events/stream").getGet();
+        assertThat(operation.getResponses().get("200").getContent())
+            .containsKey("text/event-stream");
+        assertThat(operation.getResponses().get("200").getContent())
+            .doesNotContainKey("application/json");
     }
 }

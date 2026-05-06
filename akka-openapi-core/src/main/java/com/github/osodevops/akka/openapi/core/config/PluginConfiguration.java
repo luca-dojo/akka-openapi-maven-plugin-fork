@@ -28,6 +28,7 @@ public class PluginConfiguration {
     private final boolean includeSecuritySchemes;
     private final boolean failOnValidationError;
     private final List<SecuritySchemeConfig> securitySchemes;
+    private final boolean stripServerPathPrefix;
 
     private PluginConfiguration(Builder builder) {
         this.apiTitle = builder.apiTitle;
@@ -46,6 +47,7 @@ public class PluginConfiguration {
         this.includeSecuritySchemes = builder.includeSecuritySchemes;
         this.failOnValidationError = builder.failOnValidationError;
         this.securitySchemes = Collections.unmodifiableList(new ArrayList<>(builder.securitySchemes));
+        this.stripServerPathPrefix = builder.stripServerPathPrefix;
     }
 
     public static Builder builder() {
@@ -116,6 +118,20 @@ public class PluginConfiguration {
         return securitySchemes;
     }
 
+    /**
+     * Whether to strip the server path prefix from endpoint paths to avoid duplication.
+     *
+     * <p>When a server URL contains a path (e.g., {@code /api/v1}) and an endpoint
+     * is annotated with {@code @HttpEndpoint("/api/v1/users")}, enabling this
+     * option will strip the server path prefix resulting in {@code /users} instead
+     * of {@code /api/v1/users}.</p>
+     *
+     * @return true if server path prefix should be stripped from endpoint paths
+     */
+    public boolean isStripServerPathPrefix() {
+        return stripServerPathPrefix;
+    }
+
     public static class Builder {
         private String apiTitle = "API";
         private String apiVersion = "1.0.0";
@@ -133,6 +149,7 @@ public class PluginConfiguration {
         private boolean includeSecuritySchemes = true;
         private boolean failOnValidationError = true;
         private List<SecuritySchemeConfig> securitySchemes = new ArrayList<>();
+        private boolean stripServerPathPrefix = false;
 
         public Builder apiTitle(String apiTitle) {
             this.apiTitle = Objects.requireNonNull(apiTitle, "apiTitle must not be null");
@@ -226,6 +243,11 @@ public class PluginConfiguration {
 
         public Builder addSecurityScheme(SecuritySchemeConfig securityScheme) {
             this.securitySchemes.add(securityScheme);
+            return this;
+        }
+
+        public Builder stripServerPathPrefix(boolean stripServerPathPrefix) {
+            this.stripServerPathPrefix = stripServerPathPrefix;
             return this;
         }
 

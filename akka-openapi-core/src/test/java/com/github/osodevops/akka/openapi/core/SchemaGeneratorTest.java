@@ -354,4 +354,129 @@ class SchemaGeneratorTest {
         assertThat(schema).isInstanceOf(ObjectSchema.class);
     }
 
+    @Test
+    void shouldGeneratePolymorphicSchemaForSealedInterface() {
+        Schema<?> schema = generator.generateSchema(Shape.class);
+
+        assertThat(schema).isNotNull();
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        assertThat(schemas).containsKey("Shape");
+
+        Schema<?> shapeSchema = schemas.get("Shape");
+        assertThat(shapeSchema).isInstanceOf(ComposedSchema.class);
+
+        ComposedSchema composedSchema = (ComposedSchema) shapeSchema;
+        assertThat(composedSchema.getOneOf()).hasSize(3);
+
+        // Check discriminator
+        assertThat(composedSchema.getDiscriminator()).isNotNull();
+        assertThat(composedSchema.getDiscriminator().getPropertyName()).isEqualTo("shapeType");
+
+        Map<String, String> mapping = composedSchema.getDiscriminator().getMapping();
+        assertThat(mapping).hasSize(3);
+        assertThat(mapping).containsEntry("CIRCLE", "#/components/schemas/Circle");
+        assertThat(mapping).containsEntry("RECTANGLE", "#/components/schemas/Rectangle");
+        assertThat(mapping).containsEntry("TRIANGLE", "#/components/schemas/Triangle");
+
+        // Each subtype should also be generated
+        assertThat(schemas).containsKey("Circle");
+        assertThat(schemas).containsKey("Rectangle");
+        assertThat(schemas).containsKey("Triangle");
+        assertThat(schemas.keySet().stream()
+            .filter(name -> name.matches("(Shape|Circle|Rectangle|Triangle)-\\d+"))
+            .toList()).isEmpty();
+    }
+
+    @Test
+    void shouldGenerateSubtypeSchemasForPolymorphicType() {
+        generator.generateSchema(Shape.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        Schema<?> circleSchema = schemas.get("Circle");
+        Schema<?> rectangleSchema = schemas.get("Rectangle");
+        Schema<?> triangleSchema = schemas.get("Triangle");
+
+        assertThat(circleSchema.getProperties()).containsKeys("radius", "shapeType");
+        assertThat(rectangleSchema.getProperties()).containsKeys("width", "height", "shapeType");
+        assertThat(triangleSchema.getProperties()).containsKeys("base", "height", "shapeType");
+
+        assertDiscriminatorProperty(circleSchema, "shapeType", "CIRCLE");
+        assertDiscriminatorProperty(rectangleSchema, "shapeType", "RECTANGLE");
+        assertDiscriminatorProperty(triangleSchema, "shapeType", "TRIANGLE");
+    }
+
+    @Test
+    void shouldNotGenerateDuplicateSubtypeComponentsForPolymorphicListAfterBaseType() {
+        generator.generateSchema(Shape.class);
+
+        Type listOfShapes = new java.lang.reflect.ParameterizedType() {
+            @Override
+            public Type[] getActualTypeArguments() {
+                return new Type[] { Shape.class };
+            }
+
+            @Override
+            public Type getRawType() {
+                return List.class;
+            }
+
+            @Override
+            public Type getOwnerType() {
+                return null;
+            }
+        };
+        Schema<?> listSchema = generator.generateSchema(listOfShapes);
+
+        assertThat(listSchema).isInstanceOf(ArraySchema.class);
+        assertThat(generator.getGeneratedSchemas().keySet().stream()
+            .filter(name -> name.matches("(Shape|Circle|Rectangle|Triangle)-\\d+"))
+            .toList()).isEmpty();
+    }
+
+    @Test
+    void shouldGeneratePolymorphicItemsWhenListIsGeneratedBeforeBaseType() {
+        Type listOfShapes = new java.lang.reflect.ParameterizedType() {
+            @Override
+            public Type[] getActualTypeArguments() {
+                return new Type[] { Shape.class };
+            }
+
+            @Override
+            public Type getRawType() {
+                return List.class;
+            }
+
+            @Override
+            public Type getOwnerType() {
+                return null;
+            }
+        };
+
+        Schema<?> listSchema = generator.generateSchema(listOfShapes);
+
+        assertThat(listSchema).isInstanceOf(ArraySchema.class);
+        assertThat(((ArraySchema) listSchema).getItems().get$ref())
+            .isEqualTo("#/components/schemas/Shape");
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        assertThat(schemas.get("Shape")).isInstanceOf(ComposedSchema.class);
+        assertThat(schemas.keySet().stream()
+            .filter(name -> name.matches("(Shape|Circle|Rectangle|Triangle)-\\d+"))
+            .toList()).isEmpty();
+
+        assertDiscriminatorProperty(schemas.get("Circle"), "shapeType", "CIRCLE");
+        assertDiscriminatorProperty(schemas.get("Rectangle"), "shapeType", "RECTANGLE");
+        assertDiscriminatorProperty(schemas.get("Triangle"), "shapeType", "TRIANGLE");
+    }
+
+    private void assertDiscriminatorProperty(Schema<?> schema, String propertyName, String value) {
+        assertThat(schema.getRequired()).contains(propertyName);
+
+        Schema<?> discriminatorSchema = schema.getProperties().get(propertyName);
+        assertThat(discriminatorSchema).isInstanceOf(StringSchema.class);
+        assertThat(discriminatorSchema.getConst()).isEqualTo(value);
+        assertThat(discriminatorSchema.getEnum()).hasSize(1);
+        assertThat(discriminatorSchema.getEnum().get(0)).isEqualTo(value);
+    }
 }

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.2.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.1.0...v1.2.0) (2026-05-06)
+
+### Features
+
+* generate deterministic OpenAPI output by sorting paths and schemas
+* generate Jackson polymorphic interface schemas with discriminator mappings
+* add `stripServerPathPrefix` configuration for server-path de-duplication
+* add notification example covering polymorphic request and response schemas
+
+### Bug Fixes
+
+* avoid duplicate numeric subtype components when polymorphic schemas are revisited through collections
+* include discriminator properties on subtype schemas for client-generation compatibility
+* apply server-path stripping to annotation-provided servers and prefer the longest matching prefix
+
 ## [1.1.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.1...v1.1.0) (2026-05-05)
 
 
@@ -31,32 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 * document &lt;security&gt; block + @OpenAPISummary; expose includeSecuritySchemes flag ([dccdaee](https://github.com/osodevops/akka-openapi-maven-plugin/commit/dccdaee86fe659ce52f231aa6e93684aa171d42c))
-
-## [Unreleased]
-
-### Added
-- New annotation `@OpenAPIResponseSchema(Class<?>)` to explicitly declare the
-  response payload type for low-level `HttpResponse` and
-  `CompletionStage<HttpResponse>` endpoint methods.
-- Response schema inference now unwraps `CompletionStage<T>` return types before
-  generating OpenAPI response content.
-- Tests and documentation were added for low-level Akka `HttpResponse` handling.
-- The Akka SDK reference version is updated to 3.5.17, the current Akka SDK
-  release listed by the official Akka release notes.
-- New annotation `@OpenAPISummary("...")` maps to the OpenAPI `summary` field
-  on an operation. Use it to give operations a short, single-line label that
-  appears in tools such as Swagger UI.
-- New `<security>` configuration block on the Maven plugin lets users declare
-  apiKey-based security schemes (header, query, or cookie). The plugin emits
-  them under `components.securitySchemes` and adds matching top-level
-  `security` requirements. The existing `<includeSecuritySchemes>` flag is now
-  honoured to suppress emission without removing config.
-
-### Changed
-- Misconfigured `<security>` blocks now fail fast with an actionable
-  `MojoExecutionException` instead of producing spec-invalid YAML. Currently
-  only `type: apiKey` is supported; `http`, `oauth2`, and `openIdConnect` are
-  rejected with a clear error pending a follow-up.
 
 ## [1.0.1] - 2026-04-20
 
@@ -107,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Jackson 2.18.2
 - Java 17+
 
-[Unreleased]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.2.0...HEAD
 [1.0.1]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/osodevops/akka-openapi-maven-plugin/releases/tag/v1.0.0
 [#17]: https://github.com/osodevops/akka-openapi-maven-plugin/issues/17

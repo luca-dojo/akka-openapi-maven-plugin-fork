@@ -37,7 +37,7 @@ import java.util.stream.Collectors;
  * <plugin>
  *   <groupId>sh.oso</groupId>
  *   <artifactId>akka-openapi-maven-plugin</artifactId>
- *   <version>1.1.0</version>
+ *   <version>1.2.0</version>
  *   <executions>
  *     <execution>
  *       <goals>
@@ -183,6 +183,17 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
     @Parameter(property = "openapi.failOnValidationError", defaultValue = "true")
     private boolean failOnValidationError;
 
+    /**
+     * Whether to strip the server path prefix from endpoint paths to avoid duplication.
+     *
+     * <p>When a server URL contains a path component (e.g., {@code /api/v1}) and an
+     * endpoint is annotated with {@code @HttpEndpoint("/api/v1/users")}, enabling
+     * this option strips the server path prefix from the endpoint path in the generated
+     * spec, resulting in {@code /users} instead of {@code /api/v1/users}.</p>
+     */
+    @Parameter(property = "openapi.stripServerPathPrefix", defaultValue = "false")
+    private boolean stripServerPathPrefix;
+
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (skip) {
@@ -240,7 +251,8 @@ public class GenerateOpenAPIMojo extends AbstractMojo {
             .licenseUrl(licenseUrl)
             .termsOfService(termsOfService)
             .includeSecuritySchemes(includeSecuritySchemes)
-            .failOnValidationError(failOnValidationError);
+            .failOnValidationError(failOnValidationError)
+            .stripServerPathPrefix(stripServerPathPrefix);
 
         if (scanPackages != null && !scanPackages.isEmpty()) {
             builder.scanPackages(scanPackages);

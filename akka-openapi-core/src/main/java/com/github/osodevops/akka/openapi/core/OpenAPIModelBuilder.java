@@ -102,7 +102,10 @@ public class OpenAPIModelBuilder {
                 annotationInfo = endpoint.getInfoMetadata();
             }
             annotationServers.addAll(endpoint.getServerMetadata());
-            addEndpointPaths(paths, endpoint);
+        }
+
+        for (EndpointMetadata endpoint : endpoints) {
+            addEndpointPaths(paths, endpoint, annotationServers);
         }
 
         // Build Info section (annotation values override config when non-empty)
@@ -114,7 +117,12 @@ public class OpenAPIModelBuilder {
             openAPI.setServers(servers);
         }
 
-        openAPI.setPaths(paths);
+        // Sort paths alphabetically for deterministic output
+        Paths sortedPaths = new Paths();
+        paths.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .forEach(entry -> sortedPaths.put(entry.getKey(), entry.getValue()));
+        openAPI.setPaths(sortedPaths);
 
         // Build Tags section
         if (!allTags.isEmpty()) {
@@ -129,7 +137,7 @@ public class OpenAPIModelBuilder {
                 components = new Components();
                 openAPI.setComponents(components);
             }
-            components.setSchemas(new LinkedHashMap<>(schemas));
+            components.setSchemas(new TreeMap<>(schemas));
         }
 
         // Build security schemes from configuration
@@ -284,9 +292,14 @@ public class OpenAPIModelBuilder {
             .collect(Collectors.toList());
     }
 
-    private void addEndpointPaths(Paths paths, EndpointMetadata endpoint) {
+    private void addEndpointPaths(Paths paths, EndpointMetadata endpoint, List<ServerMetadata> annotationServers) {
         for (OperationMetadata operation : endpoint.getOperations()) {
             String fullPath = normalizePath(endpoint.getBasePath(), operation.getPath());
+
+            // Strip server path prefix if configured
+            if (config.isStripServerPathPrefix()) {
+                fullPath = stripServerPathPrefix(fullPath, annotationServers);
+            }
 
             PathItem pathItem = paths.get(fullPath);
             if (pathItem == null) {
@@ -296,6 +309,83 @@ public class OpenAPIModelBuilder {
 
             Operation openApiOp = buildOperation(operation, endpoint);
             setOperationOnPathItem(pathItem, operation.getHttpMethod(), openApiOp);
+        }
+    }
+
+    /**
+     * Strips the server path prefix from an endpoint path to avoid duplication.
+     *
+     * <p>For example, if a server URL is {@code /api/v1} and the endpoint path
+     * is {@code /api/v1/users}, this method returns {@code /users}.</p>
+     *
+     * @param fullPath the full endpoint path
+     * @return the path with server prefix removed
+     */
+    private String stripServerPathPrefix(String fullPath, List<ServerMetadata> annotationServers) {
+        for (String normalizedServerPath : getServerPathPrefixes(annotationServers)) {
+            if (fullPath.startsWith(normalizedServerPath + "/") || fullPath.equals(normalizedServerPath)) {
+                String stripped = fullPath.substring(normalizedServerPath.length());
+                if (stripped.isEmpty()) {
+                    stripped = "/";
+                }
+                logger.accept("Stripped server path prefix '" + normalizedServerPath + "' from: "
+                    + fullPath + " -> " + stripped);
+                return stripped;
+            }
+        }
+        return fullPath;
+    }
+
+    private List<String> getServerPathPrefixes(List<ServerMetadata> annotationServers) {
+        Set<String> serverPaths = new LinkedHashSet<>();
+
+        for (ServerConfig sc : config.getServers()) {
+            addServerPathPrefix(serverPaths, sc.getUrl());
+        }
+        for (ServerMetadata sm : annotationServers) {
+            addServerPathPrefix(serverPaths, sm.getUrl());
+        }
+
+        return serverPaths.stream()
+            .sorted(Comparator.comparingInt(String::length).reversed())
+            .collect(Collectors.toList());
+    }
+
+    private void addServerPathPrefix(Set<String> serverPaths, String serverUrl) {
+        if (serverUrl == null) {
+            return;
+        }
+
+        String serverPath = extractPathFromUrl(serverUrl);
+        if (serverPath == null || serverPath.isBlank() || "/".equals(serverPath)) {
+            return;
+        }
+        if (!serverPath.startsWith("/")) {
+            serverPath = "/" + serverPath;
+        }
+        while (serverPath.length() > 1 && serverPath.endsWith("/")) {
+            serverPath = serverPath.substring(0, serverPath.length() - 1);
+        }
+        if (!"/".equals(serverPath)) {
+            serverPaths.add(serverPath);
+        }
+    }
+
+    /**
+     * Extracts the path component from a URL string.
+     * For relative URLs like "/api/v1", returns the URL itself.
+     * For absolute URLs like "https://api.example.com/api/v1", returns "/api/v1".
+     */
+    private String extractPathFromUrl(String url) {
+        if (url.startsWith("/")) {
+            return url;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String path = uri.getPath();
+            return path != null ? path : "";
+        } catch (Exception e) {
+            return "";
         }
     }
 
