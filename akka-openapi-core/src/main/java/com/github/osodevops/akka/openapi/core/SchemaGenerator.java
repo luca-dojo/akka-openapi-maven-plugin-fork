@@ -126,16 +126,12 @@ public class SchemaGenerator {
         configBuilder.forTypesInGeneral()
             .withCustomDefinitionProvider((javaType, context) -> {
                 Class<?> erasedType = javaType.getErasedType();
-                Class<?> valueType = findJsonValueType(erasedType);
+                if (erasedType.isEnum()) {
+                    return null;
+                }
+                Type valueType = findJsonValueType(erasedType);
                 if (valueType != null) {
-                    com.fasterxml.jackson.databind.node.ObjectNode schema =
-                        new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode();
-                    String jsonType = mapToJsonSchemaType(valueType);
-                    schema.put("type", jsonType);
-                    String format = mapToJsonSchemaFormat(valueType);
-                    if (format != null) {
-                        schema.put("format", format);
-                    }
+                    ObjectNode schema = createJsonValueDefinition(valueType, context);
                     return new CustomDefinition(schema);
                 }
                 return null;
@@ -239,6 +235,15 @@ public class SchemaGenerator {
     }
 
     private Schema<?> tryContainerSchema(Type javaType, Class<?> rawClass) {
+        if (Optional.class.isAssignableFrom(rawClass)) {
+            Type innerType = Object.class;
+            if (javaType instanceof java.lang.reflect.ParameterizedType parameterizedType
+                    && parameterizedType.getActualTypeArguments().length > 0) {
+                innerType = parameterizedType.getActualTypeArguments()[0];
+            }
+            return resolveNestedSchema(innerType);
+        }
+
         if (rawClass.isArray()) {
             ArraySchema arraySchema = new ArraySchema();
             arraySchema.setItems(resolveNestedSchema(rawClass.getComponentType()));
@@ -590,11 +595,16 @@ public class SchemaGenerator {
      * This handles value-wrapper types that serialize as their inner value.
      */
     private Schema<?> tryJsonValueSchema(Class<?> clazz) {
+        if (clazz.isEnum()) {
+            return null;
+        }
+
         // Check record components for @JsonValue
         java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
         if (components != null) {
             for (java.lang.reflect.RecordComponent component : components) {
-                if (hasJsonValueAnnotation(component.getAccessor())) {
+                if (hasJsonValueAnnotation(component.getAccessor()) ||
+                    hasJsonValueAnnotation(component)) {
                     return mapJavaTypeToSchema(component.getType(), component.getGenericType());
                 }
             }
@@ -634,63 +644,94 @@ public class SchemaGenerator {
     /**
      * Finds the type of the @JsonValue-annotated member in a class, or null if not found.
      */
-    private Class<?> findJsonValueType(Class<?> clazz) {
+    private Type findJsonValueType(Class<?> clazz) {
         // Check record components
         java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
         if (components != null) {
             for (java.lang.reflect.RecordComponent component : components) {
                 if (hasJsonValueAnnotation(component.getAccessor()) ||
                     hasJsonValueAnnotation(component)) {
-                    return component.getType();
+                    return component.getGenericType();
                 }
             }
         }
         // Check methods
         for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
             if (method.getParameterCount() == 0 && hasJsonValueAnnotation(method)) {
-                return method.getReturnType();
+                return method.getGenericReturnType();
             }
         }
         // Check fields
         for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
             if (hasJsonValueAnnotation(field)) {
-                return field.getType();
+                return field.getGenericType();
             }
         }
         return null;
     }
 
-    /**
-     * Maps a Java type to a JSON Schema type string.
-     */
-    private String mapToJsonSchemaType(Class<?> type) {
-        if (type == String.class || type == CharSequence.class || type == char.class || type == Character.class) {
-            return "string";
-        } else if (type == int.class || type == Integer.class || type == long.class || type == Long.class
-            || type == short.class || type == Short.class || type == byte.class || type == Byte.class) {
-            return "integer";
-        } else if (type == float.class || type == Float.class || type == double.class || type == Double.class) {
-            return "number";
-        } else if (type == boolean.class || type == Boolean.class) {
-            return "boolean";
+    private ObjectNode createJsonValueDefinition(Type valueType, SchemaGenerationContext context) {
+        Class<?> rawClass = getRawClass(valueType);
+        ObjectNode simpleSchema = rawClass != null ? createSimpleJsonSchema(rawClass) : null;
+        if (simpleSchema != null) {
+            return simpleSchema;
         }
-        return "string";
+        return context.createDefinition(context.getTypeContext().resolve(valueType));
     }
 
-    /**
-     * Maps a Java type to a JSON Schema format string, or null if no format applies.
-     */
-    private String mapToJsonSchemaFormat(Class<?> type) {
-        if (type == int.class || type == Integer.class) {
-            return "int32";
+    private ObjectNode createSimpleJsonSchema(Class<?> type) {
+        ObjectNode schema = objectMapper.createObjectNode();
+        if (type == String.class || type == CharSequence.class) {
+            schema.put("type", "string");
+        } else if (type == char.class || type == Character.class) {
+            schema.put("type", "string");
+            schema.put("minLength", 1);
+            schema.put("maxLength", 1);
+        } else if (type == int.class || type == Integer.class ||
+                   type == short.class || type == Short.class ||
+                   type == byte.class || type == Byte.class) {
+            schema.put("type", "integer");
+            schema.put("format", "int32");
         } else if (type == long.class || type == Long.class) {
-            return "int64";
+            schema.put("type", "integer");
+            schema.put("format", "int64");
+        } else if (type == BigInteger.class) {
+            schema.put("type", "integer");
         } else if (type == float.class || type == Float.class) {
-            return "float";
+            schema.put("type", "number");
+            schema.put("format", "float");
         } else if (type == double.class || type == Double.class) {
-            return "double";
+            schema.put("type", "number");
+            schema.put("format", "double");
+        } else if (type == BigDecimal.class) {
+            schema.put("type", "number");
+        } else if (type == boolean.class || type == Boolean.class) {
+            schema.put("type", "boolean");
+        } else if (type == UUID.class) {
+            schema.put("type", "string");
+            schema.put("format", "uuid");
+        } else if (type == LocalDate.class) {
+            schema.put("type", "string");
+            schema.put("format", "date");
+        } else if (type == LocalDateTime.class || type == ZonedDateTime.class ||
+                   type == OffsetDateTime.class || type == Instant.class) {
+            schema.put("type", "string");
+            schema.put("format", "date-time");
+        } else if (type == LocalTime.class || type == OffsetTime.class) {
+            schema.put("type", "string");
+            schema.put("format", "time");
+        } else if (type == Duration.class || type == Period.class) {
+            schema.put("type", "string");
+            schema.put("format", "duration");
+        } else if (type == byte[].class) {
+            schema.put("type", "string");
+            schema.put("format", "binary");
+        } else if (type == Object.class) {
+            schema.put("type", "object");
+        } else {
+            return null;
         }
-        return null;
+        return schema;
     }
 
     private boolean hasJsonIgnore(AnnotatedElement... elements) {
@@ -734,8 +775,7 @@ public class SchemaGenerator {
                     }
                 }
             }
-            // If we can't determine the inner type, default to string
-            return new StringSchema();
+            return new ObjectSchema();
         }
 
         // Simple types
@@ -809,6 +849,13 @@ public class SchemaGenerator {
                     Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), defName);
                     if (defSchema == null) {
                         return;
+                    }
+                    if (defSchema.get$ref() != null) {
+                        String aliasTarget = extractRefName(defSchema.get$ref(), defName);
+                        if (aliasTarget != null && !aliasTarget.equals(defName)) {
+                            schemaNameAliases.put(defName, aliasTarget);
+                            return;
+                        }
                     }
                     // Avoid storing self-referencing schemas (e.g., from "#" circular refs)
                     if (defSchema.get$ref() != null &&
@@ -940,19 +987,9 @@ public class SchemaGenerator {
             return new ObjectSchema();
         }
 
-        // Handle anyOf / oneOf (common for nullable wrappers from victools)
-        // e.g., {"anyOf": [{"$ref": "#/$defs/Title"}, {"type": "null"}]}
-        JsonNode composedNode = node.has("anyOf") ? node.get("anyOf") :
-                                (node.has("oneOf") ? node.get("oneOf") : null);
-        if (composedNode != null && composedNode.isArray()) {
-            // Find the first non-null type entry
-            for (JsonNode entry : composedNode) {
-                if (entry.has("type") && "null".equals(entry.get("type").asText())) {
-                    continue;
-                }
-                // Return the schema for the non-null variant
-                return convertJsonNodeToSchema(entry, currentTypeName);
-            }
+        Schema<?> composedSchema = tryComposedSchema(node, currentTypeName);
+        if (composedSchema != null) {
+            return applyCommonProperties(composedSchema, node);
         }
 
         String type = node.has("type") ? node.get("type").asText() : null;
@@ -1010,9 +1047,21 @@ public class SchemaGenerator {
 
             schema = objectSchema;
         } else if ("string".equals(type)) {
-            StringSchema stringSchema = new StringSchema();
+            String format = node.has("format") ? node.get("format").asText() : null;
+            Schema<?> stringSchema;
+            if ("uuid".equals(format)) {
+                stringSchema = new UUIDSchema();
+            } else if ("date".equals(format)) {
+                stringSchema = new DateSchema();
+            } else if ("date-time".equals(format)) {
+                stringSchema = new DateTimeSchema();
+            } else if ("binary".equals(format)) {
+                stringSchema = new BinarySchema();
+            } else {
+                stringSchema = new StringSchema();
+            }
             if (node.has("format")) {
-                stringSchema.setFormat(node.get("format").asText());
+                stringSchema.setFormat(format);
             }
             if (node.has("pattern")) {
                 stringSchema.setPattern(node.get("pattern").asText());
@@ -1026,7 +1075,7 @@ public class SchemaGenerator {
             if (node.has("enum")) {
                 List<String> enumValues = new ArrayList<>();
                 node.get("enum").forEach(n -> enumValues.add(n.asText()));
-                stringSchema.setEnum(enumValues);
+                ((Schema) stringSchema).setEnum(enumValues);
             }
             schema = stringSchema;
         } else if ("integer".equals(type)) {
@@ -1055,12 +1104,81 @@ public class SchemaGenerator {
             schema = numberSchema;
         } else if ("boolean".equals(type)) {
             schema = new BooleanSchema();
+        } else if ("null".equals(type)) {
+            schema = new Schema<>().type("null");
         } else {
             // Default to object schema
             schema = new ObjectSchema();
         }
 
-        // Set common properties
+        return applyCommonProperties(schema, node);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Schema<?> tryComposedSchema(JsonNode node, String currentTypeName) {
+        String compositionKeyword = null;
+        JsonNode composedNode = null;
+        if (node.has("anyOf")) {
+            compositionKeyword = "anyOf";
+            composedNode = node.get("anyOf");
+        } else if (node.has("oneOf")) {
+            compositionKeyword = "oneOf";
+            composedNode = node.get("oneOf");
+        } else if (node.has("allOf")) {
+            compositionKeyword = "allOf";
+            composedNode = node.get("allOf");
+        }
+
+        if (composedNode == null || !composedNode.isArray()) {
+            return null;
+        }
+
+        List<JsonNode> nonNullEntries = new ArrayList<>();
+        for (JsonNode entry : composedNode) {
+            if (!isNullSchema(entry)) {
+                nonNullEntries.add(entry);
+            }
+        }
+
+        if (nonNullEntries.size() == 1 && composedNode.size() == 2
+                && ("anyOf".equals(compositionKeyword) || "oneOf".equals(compositionKeyword))) {
+            return convertJsonNodeToSchema(nonNullEntries.get(0), currentTypeName);
+        }
+
+        ComposedSchema schema = new ComposedSchema();
+        List<Schema> entries = new ArrayList<>();
+        for (JsonNode entry : composedNode) {
+            entries.add((Schema) convertJsonNodeToSchema(entry, currentTypeName));
+        }
+
+        if ("anyOf".equals(compositionKeyword)) {
+            schema.setAnyOf(entries);
+        } else if ("oneOf".equals(compositionKeyword)) {
+            schema.setOneOf(entries);
+        } else {
+            schema.setAllOf(entries);
+        }
+        return schema;
+    }
+
+    private boolean isNullSchema(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return true;
+        }
+        JsonNode typeNode = node.get("type");
+        if (typeNode == null) {
+            return false;
+        }
+        if (typeNode.isTextual()) {
+            return "null".equals(typeNode.asText());
+        }
+        if (typeNode.isArray() && typeNode.size() == 1) {
+            return "null".equals(typeNode.get(0).asText());
+        }
+        return false;
+    }
+
+    private Schema<?> applyCommonProperties(Schema<?> schema, JsonNode node) {
         if (node.has("description")) {
             schema.setDescription(node.get("description").asText());
         }
