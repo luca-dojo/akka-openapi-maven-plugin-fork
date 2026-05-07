@@ -12,7 +12,10 @@ Generate OpenAPI 3.1 specifications from [Akka SDK](https://doc.akka.io/sdk/) HT
 - **Compile-Time Generation** - No runtime overhead, perfect for serverless/containers
 - **OpenAPI 3.1** - Latest specification with full JSON Schema support
 - **Automatic Schema Generation** - POJOs converted to JSON schemas automatically
+- **Optional Unwrapping** - `Optional<T>` fields and return types use the inner schema
+- **JsonValue Wrappers** - Jackson `@JsonValue` records/classes are emitted as scalar schemas
 - **Polymorphic Schemas** - Jackson `@JsonTypeInfo` / `@JsonSubTypes` types become `oneOf` schemas with discriminators
+- **Composed Schemas** - Real `anyOf`, `oneOf`, and `allOf` compositions are preserved
 - **Deterministic Output** - Paths and component schemas are sorted for stable diffs
 - **Server Path Cleanup** - Optional server path prefix stripping avoids duplicated path segments
 - **JavaDoc Extraction** - Uses your existing documentation for descriptions
@@ -28,7 +31,7 @@ Add the plugin to your `pom.xml`:
         <plugin>
             <groupId>sh.oso</groupId>
             <artifactId>akka-openapi-maven-plugin</artifactId>
-            <version>1.3.0</version>
+            <version>1.4.0</version>
             <executions>
                 <execution>
                     <goals>
@@ -156,7 +159,7 @@ components:
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.3.0</version>
+    <version>1.4.0</version>
     <configuration>
         <!-- Output settings -->
         <outputFile>${project.build.directory}/openapi.yaml</outputFile>
@@ -270,6 +273,62 @@ Notification:
     - $ref: "#/components/schemas/EmailNotification"
     - $ref: "#/components/schemas/SmsNotification"
 ```
+
+### Optional and JsonValue Schemas
+
+`Optional<T>` fields and return types are unwrapped to the schema for `T`, so
+the generated OpenAPI does not contain opaque `Optional` components:
+
+```java
+public record NotificationPreferences(
+    Optional<Title> title,
+    Optional<DeviceToken> deviceToken
+) {
+}
+```
+
+Jackson `@JsonValue` wrappers are represented as the scalar value they serialize
+to, including formats for numbers, dates, UUIDs, and other known scalar types:
+
+```java
+public record Title(@JsonValue String title) {
+}
+
+public record DeviceToken(@JsonValue long tokenId) {
+}
+```
+
+Generates:
+
+```yaml
+NotificationPreferences:
+  type: object
+  properties:
+    title:
+      $ref: "#/components/schemas/Title"
+    deviceToken:
+      $ref: "#/components/schemas/DeviceToken"
+Title:
+  type: string
+DeviceToken:
+  type: integer
+  format: int64
+```
+
+### Composed Schemas
+
+Meaningful JSON Schema compositions are preserved in the OpenAPI output:
+
+```yaml
+FlexibleIdentifier:
+  anyOf:
+    - type: string
+    - type: integer
+      format: int64
+```
+
+Nullable-only wrappers such as `anyOf: [{type: string}, {type: null}]` are still
+simplified to the non-null schema so common Java nullable patterns stay concise.
 
 ## Supported Akka SDK Annotations
 
