@@ -22,7 +22,7 @@ Add the plugin to your project's `pom.xml`:
         <plugin>
             <groupId>sh.oso</groupId>
             <artifactId>akka-openapi-maven-plugin</artifactId>
-            <version>1.3.0</version>
+            <version>1.4.0</version>
             <executions>
                 <execution>
                     <goals>
@@ -44,7 +44,7 @@ For enhanced documentation, add the annotations dependency:
     <dependency>
         <groupId>sh.oso</groupId>
         <artifactId>akka-openapi-annotations</artifactId>
-        <version>1.3.0</version>
+        <version>1.4.0</version>
     </dependency>
 </dependencies>
 ```
@@ -125,7 +125,7 @@ Configure API title, version, and description:
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.3.0</version>
+    <version>1.4.0</version>
     <configuration>
         <apiTitle>My API</apiTitle>
         <apiVersion>1.0.0</apiVersion>
