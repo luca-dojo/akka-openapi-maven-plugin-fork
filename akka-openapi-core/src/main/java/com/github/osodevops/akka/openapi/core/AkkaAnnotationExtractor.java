@@ -220,8 +220,8 @@ public class AkkaAnnotationExtractor {
                     .required(true)
                     .description("")
                     .build());
-            } else if (isSimpleType(param.getType())) {
-                // Query parameter (simple types not in path)
+            } else if (isSimpleType(param.getType()) && !isBodyCandidateEnum(param.getType(), httpMethod, i, methodParams.length)) {
+                // Query parameter (simple types not in path, unless enum on body-accepting method as last non-path param)
                 parameters.add(ParameterMetadata.builder()
                     .name(paramName)
                     .location(ParameterLocation.QUERY)
@@ -229,8 +229,9 @@ public class AkkaAnnotationExtractor {
                     .required(false)
                     .description("")
                     .build());
-            } else if (isComplexType(param.getType()) && i == methodParams.length - 1) {
-                // Request body (last complex type parameter)
+            } else if ((isComplexType(param.getType()) || isBodyCandidateEnum(param.getType(), httpMethod, i, methodParams.length))
+                       && i == methodParams.length - 1) {
+                // Request body (last complex type parameter, or enum on body-accepting method)
                 requestBody = RequestBodyMetadata.builder()
                     .javaType(paramType)
                     .required(true)
@@ -390,7 +391,14 @@ public class AkkaAnnotationExtractor {
         // Determine success status code
         String successCode = switch (httpMethod) {
             case POST -> "201";
-            case DELETE -> "204";
+            case DELETE -> {
+                // If the method returns a non-void type, use 200 instead of 204
+                Type effectiveType = resolveEffectiveResponseType(method, returnType);
+                if (effectiveType != null && !effectiveType.equals(void.class) && !effectiveType.equals(Void.class)) {
+                    yield "200";
+                }
+                yield "204";
+            }
             default -> "200";
         };
 
@@ -489,6 +497,20 @@ public class AkkaAnnotationExtractor {
      */
     private boolean isSimpleType(Class<?> type) {
         return SIMPLE_TYPES.contains(type) || type.isEnum();
+    }
+
+    /**
+     * Determines if an enum parameter should be treated as a request body rather than a query param.
+     * This applies when: the method uses POST/PUT/PATCH, the param is an enum, and it's the last parameter.
+     */
+    private boolean isBodyCandidateEnum(Class<?> type, HttpMethod httpMethod, int paramIndex, int totalParams) {
+        if (!type.isEnum()) {
+            return false;
+        }
+        if (paramIndex != totalParams - 1) {
+            return false;
+        }
+        return httpMethod == HttpMethod.POST || httpMethod == HttpMethod.PUT || httpMethod == HttpMethod.PATCH;
     }
 
     /**

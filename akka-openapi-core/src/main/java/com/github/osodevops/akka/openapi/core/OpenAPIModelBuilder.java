@@ -601,10 +601,21 @@ public class OpenAPIModelBuilder {
     private String getTypeName(java.lang.reflect.Type type) {
         if (type instanceof Class<?>) {
             return ((Class<?>) type).getSimpleName();
-        } else if (type instanceof java.lang.reflect.ParameterizedType) {
-            java.lang.reflect.Type rawType = ((java.lang.reflect.ParameterizedType) type).getRawType();
-            if (rawType instanceof Class<?>) {
-                return ((Class<?>) rawType).getSimpleName();
+        } else if (type instanceof java.lang.reflect.ParameterizedType parameterizedType) {
+            java.lang.reflect.Type rawType = parameterizedType.getRawType();
+            if (rawType instanceof Class<?> rawClass) {
+                StringBuilder name = new StringBuilder(rawClass.getSimpleName());
+                for (java.lang.reflect.Type arg : parameterizedType.getActualTypeArguments()) {
+                    if (arg instanceof Class<?> argClass) {
+                        name.append(argClass.getSimpleName());
+                    } else if (arg instanceof java.lang.reflect.ParameterizedType argPt) {
+                        java.lang.reflect.Type argRaw = argPt.getRawType();
+                        if (argRaw instanceof Class<?> argRawClass) {
+                            name.append(argRawClass.getSimpleName());
+                        }
+                    }
+                }
+                return name.toString();
             }
         }
         return type.getTypeName();

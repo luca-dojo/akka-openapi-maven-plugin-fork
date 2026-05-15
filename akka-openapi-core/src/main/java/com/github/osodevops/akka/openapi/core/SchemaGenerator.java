@@ -48,8 +48,11 @@ public class SchemaGenerator {
     private final ObjectMapper objectMapper;
     private final Map<String, Schema<?>> generatedSchemas;
     private final Map<String, String> schemaNameAliases;
+    private final Map<String, String> subtypeToParentMap;
     private final Consumer<String> logger;
     private final Set<String> processingTypes;
+    /** Registry mapping simple class name → Class<?> for enrichRequiredFields post-processing on defs. */
+    private final Map<String, Class<?>> classRegistry;
 
     /**
      * Creates a new SchemaGenerator with default settings.
@@ -68,8 +71,89 @@ public class SchemaGenerator {
         this.objectMapper = new ObjectMapper();
         this.generatedSchemas = new ConcurrentHashMap<>();
         this.schemaNameAliases = new ConcurrentHashMap<>();
+        this.subtypeToParentMap = new ConcurrentHashMap<>();
         this.processingTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
+        this.classRegistry = new ConcurrentHashMap<>();
         this.jsonSchemaGenerator = createJsonSchemaGenerator();
+    }
+
+    /**
+     * Recursively registers a class and all types reachable from it into the classRegistry:
+     * - Declared nested/inner classes
+     * - Types of record components
+     * - Types of declared fields
+     * - Generic type arguments (e.g. List&lt;Foo&gt; → Foo)
+     *
+     * This ensures that any type victools may emit as a $def can be found later
+     * for {@link #enrichRequiredFields} post-processing, regardless of the nesting depth.
+     */
+    private void registerClassHierarchy(Class<?> clazz) {
+        registerClassHierarchy(clazz, new HashSet<>());
+    }
+
+    private void registerClassHierarchy(Class<?> clazz, Set<Class<?>> visited) {
+        if (clazz == null || visited.contains(clazz)) return;
+        if (clazz.isPrimitive() || clazz.isArray() || clazz.isEnum()
+                || clazz.getPackageName().startsWith("java.")
+                || clazz.getPackageName().startsWith("javax.")
+                || clazz.getPackageName().startsWith("scala.")
+                || clazz.getPackageName().startsWith("akka.")) {
+            return;
+        }
+        visited.add(clazz);
+        classRegistry.putIfAbsent(clazz.getSimpleName(), clazz);
+
+        for (Class<?> nested : clazz.getDeclaredClasses()) {
+            registerClassHierarchy(nested, visited);
+        }
+
+        JsonSubTypes jsonSubTypes = clazz.getAnnotation(JsonSubTypes.class);
+        if (jsonSubTypes != null) {
+            for (JsonSubTypes.Type subType : jsonSubTypes.value()) {
+                registerClassHierarchy(subType.value(), visited);
+            }
+        }
+
+        if (clazz.isSealed()) {
+            for (Class<?> permitted : clazz.getPermittedSubclasses()) {
+                registerClassHierarchy(permitted, visited);
+            }
+        }
+
+        java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
+        if (components != null) {
+            for (java.lang.reflect.RecordComponent component : components) {
+                registerTypeAndArguments(component.getGenericType(), visited);
+            }
+        }
+
+        for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
+            if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                registerTypeAndArguments(field.getGenericType(), visited);
+            }
+        }
+
+        for (Class<?> iface : clazz.getInterfaces()) {
+            registerClassHierarchy(iface, visited);
+        }
+    }
+
+    /**
+     * Resolves a generic type to its raw class and any type arguments, registering each.
+     */
+    private void registerTypeAndArguments(java.lang.reflect.Type type, Set<Class<?>> visited) {
+        if (type instanceof Class<?> raw) {
+            registerClassHierarchy(raw, visited);
+        } else if (type instanceof java.lang.reflect.ParameterizedType pt) {
+            registerTypeAndArguments(pt.getRawType(), visited);
+            for (java.lang.reflect.Type arg : pt.getActualTypeArguments()) {
+                registerTypeAndArguments(arg, visited);
+            }
+        } else if (type instanceof java.lang.reflect.WildcardType wt) {
+            for (java.lang.reflect.Type bound : wt.getUpperBounds()) {
+                registerTypeAndArguments(bound, visited);
+            }
+        }
     }
 
     private com.github.victools.jsonschema.generator.SchemaGenerator createJsonSchemaGenerator() {
@@ -183,6 +267,13 @@ public class SchemaGenerator {
             return null;
         }
 
+        // Suppress framework-internal Akka/Scala types — treat as opaque object
+        String earlyTypeName = getTypeName(rawClass);
+        if (isInternalSchemaName(earlyTypeName)) {
+            logger.accept("Suppressing internal framework type: " + earlyTypeName);
+            return new ObjectSchema();
+        }
+
         // Check for simple types first
         Schema<?> simpleSchema = trySimpleTypeSchema(rawClass);
         if (simpleSchema != null) {
@@ -194,7 +285,22 @@ public class SchemaGenerator {
             return containerSchema;
         }
 
-        String typeName = getTypeName(rawClass);
+        // For parameterized non-container types (e.g. PagedResponse<Customer>),
+        // generate a specialized schema with a unique name incorporating the type argument.
+        String typeName;
+        if (javaType instanceof java.lang.reflect.ParameterizedType parameterizedType
+                && !Collection.class.isAssignableFrom(rawClass)
+                && !Map.class.isAssignableFrom(rawClass)) {
+            typeName = getSpecializedTypeName(rawClass, parameterizedType);
+        } else {
+            typeName = getTypeName(rawClass);
+        }
+
+        // Also check the full specialized type name (e.g. Source_Object_NotUsed_)
+        if (isInternalSchemaName(typeName)) {
+            logger.accept("Suppressing internal framework type: " + typeName);
+            return new ObjectSchema();
+        }
 
         // Check for circular reference
         if (processingTypes.contains(typeName)) {
@@ -261,7 +367,58 @@ public class SchemaGenerator {
             return arraySchema;
         }
 
+        // Handle Map<K, V> types as object with additionalProperties
+        if (Map.class.isAssignableFrom(rawClass)) {
+            ObjectSchema mapSchema = new ObjectSchema();
+            if (javaType instanceof java.lang.reflect.ParameterizedType parameterizedType
+                    && parameterizedType.getActualTypeArguments().length == 2) {
+                Type valueType = parameterizedType.getActualTypeArguments()[1];
+                Schema<?> valueSchema = resolveNestedSchema(valueType);
+                mapSchema.setAdditionalProperties(valueSchema);
+            } else {
+                mapSchema.setAdditionalProperties(new ObjectSchema());
+            }
+            return mapSchema;
+        }
+
         return null;
+    }
+
+    /**
+     * Pre-scans a class's fields/record components for polymorphic types and Map value types,
+     * generating their schemas first so they are available during victools processing.
+     */
+    private void preGeneratePolymorphicFields(Class<?> rawClass) {
+        // Check record components
+        java.lang.reflect.RecordComponent[] components = rawClass.getRecordComponents();
+        if (components != null) {
+            for (java.lang.reflect.RecordComponent component : components) {
+                preGenerateFieldType(component.getType(), component.getGenericType());
+            }
+        }
+        // Check declared fields (for non-record classes)
+        for (java.lang.reflect.Field field : rawClass.getDeclaredFields()) {
+            preGenerateFieldType(field.getType(), field.getGenericType());
+        }
+    }
+
+    private void preGenerateFieldType(Class<?> fieldType, java.lang.reflect.Type genericType) {
+        // Pre-generate polymorphic types
+        if (isPolymorphicType(fieldType) && !generatedSchemas.containsKey(getTypeName(fieldType))) {
+            generateSchema(fieldType);
+            return;
+        }
+        // Pre-generate Map value types (so they exist when we inline Map refs)
+        if (Map.class.isAssignableFrom(fieldType)
+                && genericType instanceof java.lang.reflect.ParameterizedType pt
+                && pt.getActualTypeArguments().length == 2) {
+            java.lang.reflect.Type valueType = pt.getActualTypeArguments()[1];
+            Class<?> valueClass = getRawClass(valueType);
+            if (valueClass != null && trySimpleTypeSchema(valueClass) == null
+                    && !generatedSchemas.containsKey(getTypeName(valueClass))) {
+                generateSchema(valueType);
+            }
+        }
     }
 
     private Schema<?> resolveNestedSchema(Type nestedType) {
@@ -284,11 +441,23 @@ public class SchemaGenerator {
         try {
             logger.accept("Generating schema for: " + typeName);
 
+            // Register class and all its nested types so defs post-processing can look them up.
+            registerClassHierarchy(rawClass);
+
+            // Pre-scan fields for polymorphic types and generate those first,
+            // so that subtypeToParentMap is populated before victools processes this type.
+            preGeneratePolymorphicFields(rawClass);
+
             // Generate JSON Schema using victools
             ObjectNode jsonSchema = jsonSchemaGenerator.generateSchema(javaType);
 
             // Convert to OpenAPI Schema
             Schema<?> openApiSchema = convertJsonSchemaToOpenApi(jsonSchema, typeName);
+
+            // Post-process: add required fields based on Optional vs non-Optional
+            if (openApiSchema instanceof ObjectSchema) {
+                enrichRequiredFields(rawClass, (ObjectSchema) openApiSchema);
+            }
 
             // Store in generated schemas if it's a named type
             if (openApiSchema != null && !(openApiSchema instanceof ArraySchema)) {
@@ -300,6 +469,19 @@ public class SchemaGenerator {
         } catch (Exception e) {
             throw new SchemaGenerationException("Failed to generate schema for: " + typeName, e);
         }
+    }
+
+    /**
+     * Checks if a type is a polymorphic type annotated with @JsonTypeInfo (or equivalent by name).
+     */
+    private boolean isPolymorphicType(Class<?> type) {
+        for (java.lang.annotation.Annotation ann : type.getAnnotations()) {
+            String annName = ann.annotationType().getName();
+            if ("com.fasterxml.jackson.annotation.JsonTypeInfo".equals(annName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -412,6 +594,8 @@ public class SchemaGenerator {
 
         for (PolymorphicSubtype subType : subTypes) {
             String subTypeName = getTypeName(subType.subClass());
+            // Register subtype→parent mapping for ref resolution
+            subtypeToParentMap.put(subTypeName, typeName);
             Schema<?> subSchema = generatedSchemas.get(subTypeName);
             if (subSchema == null) {
                 subSchema = generateSubtypeSchema(
@@ -469,7 +653,35 @@ public class SchemaGenerator {
 
     private boolean isEmptyObjectSchema(Schema<?> schema) {
         return schema instanceof ObjectSchema
-            && (schema.getProperties() == null || schema.getProperties().isEmpty());
+            && (schema.getProperties() == null || schema.getProperties().isEmpty())
+            && ((ObjectSchema) schema).getAdditionalProperties() == null;
+    }
+
+    /**
+     * Extracts the value type name from a Map def name like "Map_String_ComponentHealth_".
+     * Returns the last type segment (e.g. "ComponentHealth"), or null if unparseable.
+     */
+    private String extractMapValueType(String defName) {
+        // Pattern: Map_KeyType_ValueType_ (underscores replacing angle brackets/commas)
+        if (!defName.startsWith("Map_")) {
+            return null;
+        }
+        String rest = defName.substring("Map_".length());
+        // Remove trailing underscore
+        if (rest.endsWith("_")) {
+            rest = rest.substring(0, rest.length() - 1);
+        }
+        // Split by underscore — first segment is key type, rest is value type
+        int firstUnderscore = rest.indexOf('_');
+        if (firstUnderscore < 0) {
+            return null;
+        }
+        String valueType = rest.substring(firstUnderscore + 1);
+        // Remove trailing underscore if present
+        if (valueType.endsWith("_")) {
+            valueType = valueType.substring(0, valueType.length() - 1);
+        }
+        return valueType.isEmpty() ? null : valueType;
     }
 
     private void ensureDiscriminatorProperty(
@@ -535,6 +747,7 @@ public class SchemaGenerator {
             }
 
             ObjectSchema objectSchema = new ObjectSchema();
+            List<String> requiredFields = new ArrayList<>();
 
             // Java records expose components via Class.getRecordComponents()
             java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
@@ -550,6 +763,13 @@ public class SchemaGenerator {
                     if (propSchema != null) {
                         objectSchema.addProperty(propName, propSchema);
                     }
+                    // Non-Optional fields are required
+                    if (!Optional.class.isAssignableFrom(propType) && !isNullableAnnotated(component, accessor)) {
+                        requiredFields.add(propName);
+                    }
+                }
+                if (!requiredFields.isEmpty()) {
+                    objectSchema.setRequired(requiredFields);
                 }
                 return objectSchema;
             }
@@ -571,14 +791,23 @@ public class SchemaGenerator {
                         continue;
                     }
                     propName = getJsonPropertyName(propName, method);
-                    Schema<?> propSchema = mapJavaTypeToSchema(
-                        method.getReturnType(), method.getGenericReturnType());
+                    Class<?> returnType = method.getReturnType();
+                    Schema<?> propSchema = mapJavaTypeToSchema(returnType, method.getGenericReturnType());
                     if (propSchema != null) {
                         objectSchema.addProperty(propName, propSchema);
+                    }
+                    // Non-Optional return types are required
+                    if (!Optional.class.isAssignableFrom(returnType)
+                            && !isNullableAnnotated(method)
+                            && !returnType.isPrimitive()) {
+                        requiredFields.add(propName);
                     }
                 }
             }
 
+            if (!requiredFields.isEmpty()) {
+                objectSchema.setRequired(requiredFields);
+            }
             return objectSchema.getProperties() != null && !objectSchema.getProperties().isEmpty()
                 ? objectSchema : null;
 
@@ -734,7 +963,85 @@ public class SchemaGenerator {
         return schema;
     }
 
-    private boolean hasJsonIgnore(AnnotatedElement... elements) {
+    /**
+     * Post-processes a victools-generated ObjectSchema to add required fields
+     * based on Optional vs non-Optional type declarations in the source class.
+     * This supplements what victools detects via @NotNull/@NotBlank.
+     */
+    private void enrichRequiredFields(Class<?> rawClass, ObjectSchema schema) {
+        if (schema.getProperties() == null) return;
+        Set<String> existingRequired = schema.getRequired() != null
+                ? new HashSet<>(schema.getRequired()) : new HashSet<>();
+        List<String> toAdd = new ArrayList<>();
+
+        // Check record components
+        java.lang.reflect.RecordComponent[] components = rawClass.getRecordComponents();
+        if (components != null) {
+            for (java.lang.reflect.RecordComponent component : components) {
+                String propName = getJsonPropertyName(component.getName(), component, component.getAccessor());
+                if (schema.getProperties().containsKey(propName)
+                        && !Optional.class.isAssignableFrom(component.getType())
+                        && !existingRequired.contains(propName)
+                        && !isNullableAnnotated(component, component.getAccessor())) {
+                    toAdd.add(propName);
+                }
+            }
+        } else {
+            // Check declared fields for non-record classes
+            for (java.lang.reflect.Field field : rawClass.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                String propName = getJsonPropertyName(field.getName(), field);
+                if (schema.getProperties().containsKey(propName)
+                        && !Optional.class.isAssignableFrom(field.getType())
+                        && !existingRequired.contains(propName)
+                        && !isNullableAnnotated(field)) {
+                    toAdd.add(propName);
+                }
+            }
+        }
+
+        if (!toAdd.isEmpty()) {
+            List<String> required = new ArrayList<>(existingRequired);
+            required.addAll(toAdd);
+            schema.setRequired(required);
+        }
+    }
+
+    /**
+     * Final pass: for every ObjectSchema stored in generatedSchemas, if its name maps to a known
+     * class in the classRegistry, call enrichRequiredFields on it. This catches all schemas that
+     * were stored from victools $defs processing and never individually enriched.
+     */
+    private void enrichAllGeneratedSchemas() {
+        for (Map.Entry<String, Schema<?>> entry : generatedSchemas.entrySet()) {
+            if (!(entry.getValue() instanceof ObjectSchema objectSchema)) continue;
+            if (objectSchema.getProperties() == null) continue;
+            Class<?> clazz = classRegistry.get(entry.getKey());
+            if (clazz != null) {
+                enrichRequiredFields(clazz, objectSchema);
+            }
+        }
+    }
+
+    /**
+     * Returns true if any of the given annotated elements has a nullable annotation     * (e.g. @Nullable from any package, or @NotNull absent indicates nullable).
+     * We use the simpler heuristic: Optional type = nullable, otherwise required.
+     * This helper checks for explicit @Nullable annotation overrides.
+     */
+    private boolean isNullableAnnotated(java.lang.reflect.AnnotatedElement... elements) {
+        for (java.lang.reflect.AnnotatedElement element : elements) {
+            if (element == null) continue;
+            for (java.lang.annotation.Annotation ann : element.getAnnotations()) {
+                String name = ann.annotationType().getSimpleName();
+                if ("Nullable".equals(name) || "Null".equals(name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean hasJsonIgnore(java.lang.reflect.AnnotatedElement... elements) {
         for (AnnotatedElement element : elements) {
             if (element != null && element.getAnnotation(JsonIgnore.class) != null) {
                 return true;
@@ -806,6 +1113,16 @@ public class SchemaGenerator {
             return enumSchema;
         }
 
+        // Polymorphic type (sealed interface with @JsonTypeInfo) — emit $ref to parent discriminated schema
+        if (isPolymorphicType(type)) {
+            String refTypeName = type.getSimpleName();
+            if (!generatedSchemas.containsKey(refTypeName)) {
+                // Trigger polymorphic schema generation
+                generateSchema(type);
+            }
+            return createReference(refTypeName);
+        }
+
         // Complex object - use $ref if already generated, otherwise generate and store
         String refTypeName = type.getSimpleName();
         // Check if we need to generate or upgrade the schema
@@ -821,6 +1138,8 @@ public class SchemaGenerator {
             }
         }
         if (needsGeneration) {
+            // Register class so nested defs from this type can be enriched with required fields
+            registerClassHierarchy(type);
             // Store placeholder first to prevent infinite recursion for circular references
             generatedSchemas.put(refTypeName, new ObjectSchema());
             // Try to generate schema by reflection for records and POJOs
@@ -841,15 +1160,46 @@ public class SchemaGenerator {
         registerExistingSchemaAliases(defs);
 
         if (defs != null && defs.isObject()) {
+            // First pass: process non-Map, non-nullable defs
             defs.fields().forEachRemaining(entry -> {
                 String defName = sanitizeSchemaName(entry.getKey());
-                if (!rootAliases.contains(defName)
+                if (defName.endsWith("-nullable") || defName.startsWith("Map_")) {
+                    return;
+                }
+                // Skip framework-internal/Akka SDK types
+                if (isInternalSchemaName(defName)) {
+                    return;
+                }
+                // Check if this is a duplicate numbered variant (e.g. EmailConfig-2 when EmailConfig-1 is already registered)
+                String existingForDef = findExistingSchemaName(defName);
+                if (existingForDef != null && !existingForDef.equals(defName)) {
+                    schemaNameAliases.put(defName, existingForDef);
+                    return; // skip – already have an equivalent schema
+                }
+                // If this is a new numbered schema (e.g. EmailConfig-1) and no base exists yet,
+                // register it under the base name (e.g. EmailConfig) to avoid the suffix.
+                String registrationName = defName;
+                String baseName = stripNumericSuffix(defName);
+                if (baseName != null && !generatedSchemas.containsKey(baseName)
+                        && !schemaNameAliases.containsKey(baseName)
+                        && !rootAliases.contains(baseName)
                         && !schemaNameAliases.containsKey(defName)
                         && !generatedSchemas.containsKey(defName)) {
-                    Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), defName);
+                    registrationName = baseName;
+                    schemaNameAliases.put(defName, baseName);
+                }
+                if (!rootAliases.contains(defName)
+                        && !generatedSchemas.containsKey(registrationName)) {
+                    // Only process if not already aliased to something else
+                    String existingAlias = schemaNameAliases.get(defName);
+                    if (existingAlias != null && !existingAlias.equals(registrationName)) {
+                        return;
+                    }
+                    Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), registrationName);
                     if (defSchema == null) {
                         return;
                     }
+                    // TODO: REMOVE IF NEEDED
                     if (defSchema.get$ref() != null) {
                         String aliasTarget = extractRefName(defSchema.get$ref(), defName);
                         if (aliasTarget != null && !aliasTarget.equals(defName)) {
@@ -859,12 +1209,59 @@ public class SchemaGenerator {
                     }
                     // Avoid storing self-referencing schemas (e.g., from "#" circular refs)
                     if (defSchema.get$ref() != null &&
-                        defSchema.get$ref().equals("#/components/schemas/" + defName)) {
+                        defSchema.get$ref().equals("#/components/schemas/" + registrationName)) {
                         ObjectSchema objectSchema = new ObjectSchema();
                         objectSchema.setAdditionalProperties(new ObjectSchema());
-                        generatedSchemas.put(defName, objectSchema);
+                        generatedSchemas.put(registrationName, objectSchema);
                     } else {
-                        generatedSchemas.put(defName, defSchema);
+                        generatedSchemas.put(registrationName, defSchema);
+                    }
+                }
+            });
+
+            // Second pass: process Map-type defs (value types should now be registered)
+            defs.fields().forEachRemaining(entry -> {
+                String defName = sanitizeSchemaName(entry.getKey());
+                if (!defName.startsWith("Map_")) {
+                    return;
+                }
+                String valueTypeName = extractMapValueType(defName);
+                if (valueTypeName != null) {
+                    ObjectSchema mapSchema = new ObjectSchema();
+                    mapSchema.setAdditionalProperties(createReference(valueTypeName));
+                    generatedSchemas.put(defName, mapSchema);
+                    // If value type wasn't generated in first pass, try from additionalProperties or defs
+                    if (!generatedSchemas.containsKey(valueTypeName)) {
+                        JsonNode mapNode = entry.getValue();
+                        if (mapNode.has("additionalProperties")) {
+                            JsonNode addPropsNode = mapNode.get("additionalProperties");
+                            if (addPropsNode.has("$ref")) {
+                                String valRef = extractRawRefName(addPropsNode.get("$ref").asText());
+                                if (valRef != null) {
+                                    JsonNode valDef = findDefinition(defs, valRef);
+                                    if (valDef != null) {
+                                        Schema<?> valSchema = convertJsonNodeToSchema(valDef, valueTypeName);
+                                        if (valSchema != null) {
+                                            generatedSchemas.put(valueTypeName, valSchema);
+                                        }
+                                    }
+                                }
+                            } else {
+                                Schema<?> valSchema = convertJsonNodeToSchema(addPropsNode, valueTypeName);
+                                if (valSchema != null) {
+                                    generatedSchemas.put(valueTypeName, valSchema);
+                                }
+                            }
+                        } else {
+                            // Look for the value type in defs by name
+                            JsonNode valDef = findDefinition(defs, valueTypeName);
+                            if (valDef != null) {
+                                Schema<?> valSchema = convertJsonNodeToSchema(valDef, valueTypeName);
+                                if (valSchema != null) {
+                                    generatedSchemas.put(valueTypeName, valSchema);
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -901,7 +1298,27 @@ public class SchemaGenerator {
         }
 
         String baseName = stripNumericSuffix(schemaName);
-        return baseName != null && generatedSchemas.containsKey(baseName) ? baseName : null;
+        if (baseName == null) {
+            return null;
+        }
+        if (generatedSchemas.containsKey(baseName)) {
+            return baseName;
+        }
+        // Also check if any numbered variant of baseName already exists (e.g. baseName-1)
+        for (String existing : generatedSchemas.keySet()) {
+            String existingBase = stripNumericSuffix(existing);
+            if (baseName.equals(existingBase)) {
+                return existing;
+            }
+        }
+        // Also check aliases for numbered variants
+        for (Map.Entry<String, String> aliasEntry : schemaNameAliases.entrySet()) {
+            String aliasBase = stripNumericSuffix(aliasEntry.getKey());
+            if (baseName.equals(aliasBase)) {
+                return aliasEntry.getValue();
+            }
+        }
+        return null;
     }
 
     private String stripNumericSuffix(String schemaName) {
@@ -951,7 +1368,12 @@ public class SchemaGenerator {
         Iterator<Map.Entry<String, JsonNode>> fields = defs.fields();
         while (fields.hasNext()) {
             Map.Entry<String, JsonNode> entry = fields.next();
-            if (sanitizedRefName.equals(sanitizeSchemaName(entry.getKey()))) {
+            String sanitizedKey = sanitizeSchemaName(entry.getKey());
+            if (sanitizedRefName.equals(sanitizedKey)) {
+                return entry.getValue();
+            }
+            // Also match by suffix (for inner classes like HealthStatus.ComponentHealth → ComponentHealth)
+            if (sanitizedKey.endsWith("_" + sanitizedRefName) || sanitizedKey.endsWith("." + refName)) {
                 return entry.getValue();
             }
         }
@@ -981,6 +1403,28 @@ public class SchemaGenerator {
             // Extract the type name from the reference
             String refName = extractRefName(ref, currentTypeName);
             if (refName != null && !refName.isEmpty()) {
+                // For Map-type refs, inline as object with additionalProperties
+                if (refName.startsWith("Map_")) {
+                    String valueTypeName = extractMapValueType(refName);
+                    ObjectSchema mapSchema = new ObjectSchema();
+                    if (valueTypeName != null && !valueTypeName.isEmpty()) {
+                        mapSchema.setAdditionalProperties(createReference(valueTypeName));
+                    } else {
+                        mapSchema.setAdditionalProperties(new ObjectSchema());
+                    }
+                    return mapSchema;
+                }
+                // If refName is a subtype of a polymorphic parent, and we're not
+                // currently building that parent's schema, redirect to the parent.
+                String parentType = subtypeToParentMap.get(refName);
+                if (parentType != null && !parentType.equals(currentTypeName)) {
+                    return createReference(parentType);
+                }
+                // Suppress refs to internal framework types — treat as opaque object
+                if (isInternalSchemaName(refName)) {
+                    logger.accept("Suppressing $ref to internal framework type: " + refName);
+                    return new ObjectSchema();
+                }
                 return createReference(refName);
             }
             // If we can't extract a proper ref name, return an object schema
@@ -1261,6 +1705,10 @@ public class SchemaGenerator {
 
     private String canonicalSchemaName(String name) {
         String sanitizedName = sanitizeSchemaName(name);
+        // Strip "-nullable" suffix — these are victools wrappers for Optional fields
+        if (sanitizedName.endsWith("-nullable")) {
+            sanitizedName = sanitizedName.substring(0, sanitizedName.length() - "-nullable".length());
+        }
         return schemaNameAliases.getOrDefault(sanitizedName, sanitizedName);
     }
 
@@ -1279,6 +1727,46 @@ public class SchemaGenerator {
         // Valid characters: letters, digits, underscores, hyphens
         // Common problematic characters: parentheses, commas, spaces, angle brackets
         return name.replaceAll("[^a-zA-Z0-9_-]", "_");
+    }
+
+    /**
+     * Returns true if this schema name refers to a framework-internal or Akka SDK
+     * type that should never appear as a component in a user-facing OpenAPI spec.
+     *
+     * <p>Examples that should be suppressed:</p>
+     * <ul>
+     *   <li>{@code Source_Object_NotUsed_} — Akka Streams Source materialized value</li>
+     *   <li>{@code NotUsed} — Akka's scala.runtime.BoxedUnit equivalent</li>
+     *   <li>{@code Done} — Akka's akka.Done</li>
+     * </ul>
+     */
+    private boolean isInternalSchemaName(String sanitizedName) {
+        if (sanitizedName == null) return false;
+        // Akka Streams Source with any type params, e.g. Source_Object_NotUsed_
+        // Also match the raw class simple name "Source" to catch it before specialisation
+        if (sanitizedName.equals("Source") || sanitizedName.startsWith("Source_")) return true;
+        // Akka internal marker types
+        if (sanitizedName.equals("NotUsed")) return true;
+        if (sanitizedName.equals("Done")) return true;
+        // scala.runtime / scala stdlib leaking through
+        if (sanitizedName.startsWith("scala_")) return true;
+        if (sanitizedName.startsWith("akka_")) return true;
+        return false;
+    }
+
+    /**
+     * Generates a specialized type name for parameterized types.
+     * E.g., PagedResponse<Customer> becomes "PagedResponseCustomer".
+     */
+    private String getSpecializedTypeName(Class<?> rawClass, java.lang.reflect.ParameterizedType parameterizedType) {
+        StringBuilder name = new StringBuilder(getTypeName(rawClass));
+        for (Type arg : parameterizedType.getActualTypeArguments()) {
+            Class<?> argClass = getRawClass(arg);
+            if (argClass != null) {
+                name.append(getTypeName(argClass));
+            }
+        }
+        return name.toString();
     }
 
     private Schema<?> trySimpleTypeSchema(Class<?> type) {
@@ -1350,14 +1838,171 @@ public class SchemaGenerator {
     }
 
     /**
-     * Returns all schemas generated so far.
+     * Returns all schemas generated so far, with post-processing to remove
+     * duplicate "-nullable" wrapper schemas.
      *
      * <p>These schemas should be added to the OpenAPI components/schemas section.</p>
      *
      * @return map of schema names to schemas
      */
     public Map<String, Schema<?>> getGeneratedSchemas() {
-        return Collections.unmodifiableMap(generatedSchemas);
+        // Ensure required fields are correctly set on all generated component schemas.
+        // This catches types that were stored from victools $defs processing without being
+        // individually enriched (e.g. nested records, inner static classes, propagated types).
+        enrichAllGeneratedSchemas();
+
+        // Remove "-nullable" entries, numeric-suffixed duplicates, and Map_ entries
+        Map<String, Schema<?>> result = new LinkedHashMap<>(generatedSchemas);
+        // Build a map of removed name → canonical replacement name for ref rewriting
+        Map<String, String> replacements = new LinkedHashMap<>();
+        List<String> toRemove = new ArrayList<>();
+
+        for (String name : result.keySet()) {
+            if (name.endsWith("-nullable")) {
+                String baseName = name.substring(0, name.length() - "-nullable".length());
+                if (result.containsKey(baseName)) {
+                    toRemove.add(name);
+                    replacements.put(name, baseName);
+                }
+            } else if (name.startsWith("Map_")) {
+                toRemove.add(name);
+                // Map_ entries are inlined, no canonical replacement needed
+            } else if (isInternalSchemaName(name)) {
+                toRemove.add(name);
+                // Internal framework types are silently dropped
+            } else {
+                String baseName = stripNumericSuffix(name);
+                if (baseName != null && result.containsKey(baseName)) {
+                    toRemove.add(name);
+                    // If base name is itself a subtype, redirect to parent
+                    String parent = subtypeToParentMap.get(baseName);
+                    replacements.put(name, parent != null ? parent : baseName);
+                }
+            }
+        }
+
+        toRemove.forEach(result::remove);
+
+        // Also include all schemaNameAliases entries so that refs to numbered names that were
+        // never added to generatedSchemas (skipped by dedup) still get rewritten correctly.
+        schemaNameAliases.forEach((aliasName, canonicalName) -> {
+            if (!result.containsKey(aliasName)) {
+                // Resolve transitively: if canonicalName is itself aliased
+                String resolved = canonicalName;
+                while (schemaNameAliases.containsKey(resolved)) {
+                    resolved = schemaNameAliases.get(resolved);
+                }
+                replacements.put(aliasName, resolved);
+            }
+        });
+
+        // Rewrite $refs in all remaining schemas to replace removed names with canonical ones
+        if (!replacements.isEmpty()) {
+            for (Schema<?> schema : result.values()) {
+                rewriteRefs(schema, replacements);
+            }
+        }
+
+        // Final safety pass: strip any remaining $refs that point to internal framework types
+        // (may have been emitted before interception was possible)
+        for (Schema<?> schema : result.values()) {
+            stripInternalRefs(schema);
+        }
+
+        return Collections.unmodifiableMap(result);
+    }
+
+    /**
+     * Recursively rewrites $ref values in a schema using the given replacement map.
+     */
+    private void rewriteRefs(Schema<?> schema, Map<String, String> replacements) {
+        if (schema == null) return;
+
+        // Fix direct $ref
+        if (schema.get$ref() != null) {
+            String ref = schema.get$ref();
+            String suffix = "#/components/schemas/";
+            if (ref.startsWith(suffix)) {
+                String name = ref.substring(suffix.length());
+                String replacement = replacements.get(name);
+                if (replacement != null) {
+                    schema.set$ref(suffix + replacement);
+                }
+            }
+        }
+
+        // Recurse into properties
+        if (schema.getProperties() != null) {
+            schema.getProperties().values().forEach(prop -> rewriteRefs((Schema<?>) prop, replacements));
+        }
+
+        // Recurse into additionalProperties
+        Object addProps = schema.getAdditionalProperties();
+        if (addProps instanceof Schema) {
+            rewriteRefs((Schema<?>) addProps, replacements);
+        }
+
+        // Recurse into items (array)
+        if (schema.getItems() != null) {
+            rewriteRefs(schema.getItems(), replacements);
+        }
+
+        // Recurse into oneOf / anyOf / allOf
+        if (schema instanceof ComposedSchema composed) {
+            if (composed.getOneOf() != null) {
+                composed.getOneOf().forEach(s -> rewriteRefs(s, replacements));
+            }
+            if (composed.getAnyOf() != null) {
+                composed.getAnyOf().forEach(s -> rewriteRefs(s, replacements));
+            }
+            if (composed.getAllOf() != null) {
+                composed.getAllOf().forEach(s -> rewriteRefs(s, replacements));
+            }
+        }
+    }
+
+    /**
+     * Recursively removes $refs that point to internal framework types,
+     * replacing them with an inline empty object schema to avoid unresolved-ref errors.
+     */
+    @SuppressWarnings("unchecked")
+    private void stripInternalRefs(Schema<?> schema) {
+        if (schema == null) return;
+
+        // Fix direct $ref
+        if (schema.get$ref() != null) {
+            String ref = schema.get$ref();
+            String suffix = "#/components/schemas/";
+            if (ref.startsWith(suffix)) {
+                String name = ref.substring(suffix.length());
+                if (isInternalSchemaName(name)) {
+                    schema.set$ref(null);
+                    schema.setType("object");
+                }
+            }
+        }
+
+        if (schema.getProperties() != null) {
+            schema.getProperties().values().forEach(p -> stripInternalRefs((Schema<?>) p));
+        }
+        Object addProps = schema.getAdditionalProperties();
+        if (addProps instanceof Schema) {
+            stripInternalRefs((Schema<?>) addProps);
+        }
+        if (schema.getItems() != null) {
+            stripInternalRefs(schema.getItems());
+        }
+        if (schema instanceof ComposedSchema composed) {
+            if (composed.getOneOf() != null) {
+                composed.getOneOf().forEach(this::stripInternalRefs);
+            }
+            if (composed.getAnyOf() != null) {
+                composed.getAnyOf().forEach(this::stripInternalRefs);
+            }
+            if (composed.getAllOf() != null) {
+                composed.getAllOf().forEach(this::stripInternalRefs);
+            }
+        }
     }
 
     /**
@@ -1366,6 +2011,7 @@ public class SchemaGenerator {
     public void clearSchemas() {
         generatedSchemas.clear();
         schemaNameAliases.clear();
+        subtypeToParentMap.clear();
     }
 
     /**
