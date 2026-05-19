@@ -4,6 +4,7 @@ import com.github.osodevops.akka.openapi.annotations.*;
 import com.github.osodevops.akka.openapi.core.fixtures.AnnotatedEndpoint;
 import com.github.osodevops.akka.openapi.core.fixtures.GetCustomerResponse;
 import com.github.osodevops.akka.openapi.core.fixtures.LowLevelHttpResponseEndpoint;
+import com.github.osodevops.akka.openapi.core.fixtures.QueryParamEndpoint;
 import com.github.osodevops.akka.openapi.core.fixtures.SimpleEndpoint;
 import com.github.osodevops.akka.openapi.core.fixtures.StreamingEndpoint;
 import com.github.osodevops.akka.openapi.core.model.InfoMetadata;
@@ -293,5 +294,88 @@ class OpenAPIAnnotationExtractorTest {
         OpenAPIResponse[] responses = method.getAnnotationsByType(OpenAPIResponse.class);
 
         assertThat(responses[0].mediaType()).isEqualTo("application/json");
+    }
+
+    // ---------------------------------------------------------------------------
+    // @OpenAPIQueryParam annotation tests
+    // ---------------------------------------------------------------------------
+
+    @Test
+    void shouldReadSingleOpenAPIQueryParam() throws Exception {
+        Method method = QueryParamEndpoint.class.getMethod("listReports");
+        OpenAPIQueryParam[] params = method.getAnnotationsByType(OpenAPIQueryParam.class);
+
+        assertThat(params).hasSize(3);
+
+        OpenAPIQueryParam limitParam = java.util.Arrays.stream(params)
+            .filter(p -> "limit".equals(p.name()))
+            .findFirst()
+            .orElseThrow();
+        assertThat(limitParam.description()).isEqualTo("Maximum number of results to return");
+        assertThat(limitParam.required()).isFalse();
+        assertThat(limitParam.type()).isEqualTo(Integer.class);
+        assertThat(limitParam.format()).isEqualTo("int32");
+        assertThat(limitParam.minimum()).isEqualTo("1");
+        assertThat(limitParam.defaultValue()).isEqualTo("20");
+        assertThat(limitParam.maximum()).isEqualTo(""); // not set
+    }
+
+    @Test
+    void shouldReadStringOpenAPIQueryParam() throws Exception {
+        Method method = QueryParamEndpoint.class.getMethod("listReports");
+        OpenAPIQueryParam[] params = method.getAnnotationsByType(OpenAPIQueryParam.class);
+
+        OpenAPIQueryParam searchParam = java.util.Arrays.stream(params)
+            .filter(p -> "search".equals(p.name()))
+            .findFirst()
+            .orElseThrow();
+        assertThat(searchParam.type()).isEqualTo(Void.class); // default — will resolve to String
+        assertThat(searchParam.defaultValue()).isEqualTo("");
+    }
+
+    @Test
+    void shouldReadBooleanOpenAPIQueryParam() throws Exception {
+        Method method = QueryParamEndpoint.class.getMethod("listReports");
+        OpenAPIQueryParam[] params = method.getAnnotationsByType(OpenAPIQueryParam.class);
+
+        OpenAPIQueryParam archivedParam = java.util.Arrays.stream(params)
+            .filter(p -> "includeArchived".equals(p.name()))
+            .findFirst()
+            .orElseThrow();
+        assertThat(archivedParam.type()).isEqualTo(Boolean.class);
+        assertThat(archivedParam.defaultValue()).isEqualTo("false");
+    }
+
+    @Test
+    void shouldReadMultipleOpenAPIQueryParams() throws Exception {
+        Method method = QueryParamEndpoint.class.getMethod("getPagedResults");
+        OpenAPIQueryParam[] params = method.getAnnotationsByType(OpenAPIQueryParam.class);
+
+        assertThat(params).hasSize(2);
+        assertThat(params[0].name()).isEqualTo("page");
+        assertThat(params[1].name()).isEqualTo("size");
+        assertThat(params[1].maximum()).isEqualTo("100");
+    }
+
+    @Test
+    void openAPIQueryParamShouldHaveExpectedDefaults() throws Exception {
+        Method method = QueryParamEndpoint.class.getMethod("listReports");
+        OpenAPIQueryParam[] params = method.getAnnotationsByType(OpenAPIQueryParam.class);
+        OpenAPIQueryParam limitParam = java.util.Arrays.stream(params)
+            .filter(p -> "limit".equals(p.name()))
+            .findFirst()
+            .orElseThrow();
+
+        // Verify maximum is not set for the limit param
+        assertThat(limitParam.maximum()).isEqualTo("");
+    }
+
+    @Test
+    void openAPIQueryParamShouldTargetMethodOnly() {
+        java.lang.annotation.Target target =
+            OpenAPIQueryParam.class.getAnnotation(java.lang.annotation.Target.class);
+
+        assertThat(target).isNotNull();
+        assertThat(target.value()).containsExactly(java.lang.annotation.ElementType.METHOD);
     }
 }

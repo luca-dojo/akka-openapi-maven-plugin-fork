@@ -11,6 +11,7 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
@@ -244,6 +245,9 @@ public class AkkaAnnotationExtractor {
         Map<String, ResponseMetadata> responses = inferResponses(method, httpMethod);
         mergeAnnotatedResponses(responses, method);
 
+        // Merge @OpenAPIQueryParam annotations into the parameter list
+        mergeAnnotatedQueryParams(parameters, method);
+
         // Extract @OpenAPIExample annotations for request body
         if (requestBody != null) {
             OpenAPIExample[] examples = method.getAnnotationsByType(OpenAPIExample.class);
@@ -439,6 +443,136 @@ public class AkkaAnnotationExtractor {
         }
 
         return responses;
+    }
+
+    /**
+     * Merges @OpenAPIQueryParam annotations into the inferred parameter list.
+     *
+     * <p>For each annotation, if a QUERY parameter with the same name is already in the list
+     * (inferred from the method signature), it is enriched/replaced in-place so that order is
+     * preserved.  Otherwise a new parameter entry is appended.</p>
+     */
+    private void mergeAnnotatedQueryParams(List<ParameterMetadata> parameters, Method method) {
+        OpenAPIQueryParam[] annotations = method.getAnnotationsByType(OpenAPIQueryParam.class);
+        if (annotations.length == 0) {
+            return;
+        }
+
+        logger.accept("Found " + annotations.length + " @OpenAPIQueryParam annotations on " + method.getName());
+
+        for (OpenAPIQueryParam ann : annotations) {
+            String paramName = ann.name();
+
+            // Locate an existing inferred QUERY parameter with the same name (not PATH/HEADER)
+            int existingIndex = -1;
+            ParameterMetadata existing = null;
+            for (int i = 0; i < parameters.size(); i++) {
+                ParameterMetadata p = parameters.get(i);
+                if (p.getName().equals(paramName) && p.getLocation() == ParameterLocation.QUERY) {
+                    existingIndex = i;
+                    existing = p;
+                    break;
+                }
+            }
+
+            // Resolve effective Java type
+            Type effectiveType;
+            if (ann.type() == Void.class) {
+                effectiveType = (existing != null) ? existing.getJavaType() : String.class;
+            } else {
+                effectiveType = ann.type();
+            }
+
+            // Parse defaultValue against the resolved type
+            Object defaultValue = null;
+            if (!ann.defaultValue().isEmpty()) {
+                defaultValue = parseAnnotationValue(ann.defaultValue(), effectiveType, method.getName(), paramName);
+            } else if (existing != null && existing.getDefaultValue() != null) {
+                defaultValue = existing.getDefaultValue();
+            }
+
+            // Resolve format: annotation wins over inferred
+            String format = null;
+            if (!ann.format().isEmpty()) {
+                format = ann.format();
+            } else if (existing != null && existing.getFormat() != null) {
+                format = existing.getFormat();
+            }
+
+            // Resolve description: annotation wins over inferred
+            String description = !ann.description().isEmpty() ? ann.description()
+                : (existing != null ? existing.getDescription() : "");
+
+            BigDecimal minimum = parseBigDecimal(ann.minimum(), "minimum", paramName, method.getName());
+            BigDecimal maximum = parseBigDecimal(ann.maximum(), "maximum", paramName, method.getName());
+
+            ParameterMetadata.Builder builder = ParameterMetadata.builder()
+                .name(paramName)
+                .location(ParameterLocation.QUERY)
+                .javaType(effectiveType)
+                .description(description)
+                .required(ann.required())
+                .minimum(minimum)
+                .maximum(maximum);
+
+            if (defaultValue != null) {
+                builder.defaultValue(defaultValue);
+            }
+            if (format != null) {
+                builder.format(format);
+            }
+
+            ParameterMetadata annotated = builder.build();
+
+            if (existingIndex >= 0) {
+                parameters.set(existingIndex, annotated);
+            } else {
+                parameters.add(annotated);
+            }
+
+            logger.accept("Merged @OpenAPIQueryParam(name=\"" + paramName + "\") on " + method.getName());
+        }
+    }
+
+    /**
+     * Parses a string annotation value into the most specific Java type matching
+     * the resolved parameter type.  Falls back to returning the string itself when
+     * the value cannot be converted.
+     */
+    private Object parseAnnotationValue(String value, Type type, String methodName, String paramName) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        try {
+            if (type == Integer.class || type == int.class) return Integer.parseInt(value);
+            if (type == Long.class || type == long.class) return Long.parseLong(value);
+            if (type == Double.class || type == double.class) return Double.parseDouble(value);
+            if (type == Float.class || type == float.class) return Float.parseFloat(value);
+            if (type == Boolean.class || type == boolean.class) return Boolean.parseBoolean(value);
+        } catch (NumberFormatException e) {
+            logger.accept("Warning: could not parse defaultValue \"" + value + "\" as "
+                + type.getTypeName() + " for param \"" + paramName + "\" on " + methodName
+                + "; using string value");
+        }
+        return value;
+    }
+
+    /**
+     * Parses a string annotation attribute into a {@link BigDecimal}.
+     * Returns {@code null} and logs a warning when the string is blank or unparseable.
+     */
+    private BigDecimal parseBigDecimal(String value, String attributeName,
+                                       String paramName, String methodName) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(value);
+        } catch (NumberFormatException e) {
+            logger.accept("Warning: could not parse " + attributeName + " \"" + value
+                + "\" for param \"" + paramName + "\" on " + methodName + "; ignoring");
+            return null;
+        }
     }
 
     /**

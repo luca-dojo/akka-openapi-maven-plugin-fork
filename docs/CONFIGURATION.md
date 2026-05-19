@@ -8,7 +8,7 @@ This document describes all configuration options available for the Akka OpenAPI
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.4.0</version>
+    <version>1.3.0</version>
     <configuration>
         <!-- Options here -->
     </configuration>
@@ -194,7 +194,7 @@ Here's a complete configuration example:
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.4.0</version>
+    <version>1.3.0</version>
     <configuration>
         <!-- Output Settings -->
         <outputFile>${project.build.directory}/openapi.yaml</outputFile>

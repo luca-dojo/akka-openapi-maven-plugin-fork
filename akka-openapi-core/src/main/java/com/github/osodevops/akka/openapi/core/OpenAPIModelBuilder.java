@@ -472,9 +472,21 @@ public class OpenAPIModelBuilder {
         Schema<?> schema = schemaGenerator.generateSchema(paramMeta.getJavaType());
         parameter.setSchema(schema);
 
-        if (paramMeta.getDefaultValue() != null) {
-            if (schema != null) {
+        if (schema != null) {
+            if (paramMeta.getDefaultValue() != null) {
                 schema.setDefault(paramMeta.getDefaultValue());
+            }
+
+            if (paramMeta.getFormat() != null && !paramMeta.getFormat().isEmpty()) {
+                schema.setFormat(paramMeta.getFormat());
+            }
+
+            if (paramMeta.getMinimum() != null) {
+                schema.setMinimum(paramMeta.getMinimum());
+            }
+
+            if (paramMeta.getMaximum() != null) {
+                schema.setMaximum(paramMeta.getMaximum());
             }
         }
 

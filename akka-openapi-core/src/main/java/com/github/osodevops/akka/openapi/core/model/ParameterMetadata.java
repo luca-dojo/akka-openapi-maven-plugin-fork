@@ -1,6 +1,7 @@
 package com.github.osodevops.akka.openapi.core.model;
 
 import java.lang.reflect.Type;
+import java.math.BigDecimal;
 import java.util.Objects;
 
 /**
@@ -20,6 +21,8 @@ public final class ParameterMetadata {
     private final Object defaultValue;
     private final Object example;
     private final String format;
+    private final BigDecimal minimum;
+    private final BigDecimal maximum;
 
     private ParameterMetadata(Builder builder) {
         this.name = Objects.requireNonNull(builder.name, "name must not be null");
@@ -30,6 +33,8 @@ public final class ParameterMetadata {
         this.defaultValue = builder.defaultValue;
         this.example = builder.example;
         this.format = builder.format;
+        this.minimum = builder.minimum;
+        this.maximum = builder.maximum;
     }
 
     public static Builder builder() {
@@ -108,6 +113,24 @@ public final class ParameterMetadata {
         return format;
     }
 
+    /**
+     * Gets the inclusive minimum value constraint for numeric parameters.
+     *
+     * @return the minimum as a BigDecimal, or null if not set
+     */
+    public BigDecimal getMinimum() {
+        return minimum;
+    }
+
+    /**
+     * Gets the inclusive maximum value constraint for numeric parameters.
+     *
+     * @return the maximum as a BigDecimal, or null if not set
+     */
+    public BigDecimal getMaximum() {
+        return maximum;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -168,6 +191,8 @@ public final class ParameterMetadata {
         private Object defaultValue;
         private Object example;
         private String format;
+        private BigDecimal minimum;
+        private BigDecimal maximum;
 
         private Builder() {
         }
@@ -209,6 +234,16 @@ public final class ParameterMetadata {
 
         public Builder format(String format) {
             this.format = format;
+            return this;
+        }
+
+        public Builder minimum(BigDecimal minimum) {
+            this.minimum = minimum;
+            return this;
+        }
+
+        public Builder maximum(BigDecimal maximum) {
+            this.maximum = maximum;
             return this;
         }
 

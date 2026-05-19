@@ -293,11 +293,24 @@ class SchemaGeneratorTest {
         Schema<?> holderSchema = schemas.get("OptionalHolder");
 
         assertThat(holderSchema.getRequired()).isNullOrEmpty();
-        assertThat(holderSchema.getProperties().get("maybeText")).isInstanceOf(StringSchema.class);
-        assertThat(holderSchema.getProperties().get("maybeTitle").get$ref())
+
+        // Optional<String> → string type with null included in types (OAS 3.1 nullable)
+        Schema<?> maybeText = (Schema<?>) holderSchema.getProperties().get("maybeText");
+        assertThat(maybeText).isInstanceOf(StringSchema.class);
+        assertThat(maybeText.getTypes()).contains("null");
+
+        // Optional<JsonStringValue> → oneOf with $ref and null type (OAS 3.1 nullable $ref)
+        Schema<?> maybeTitle = (Schema<?>) holderSchema.getProperties().get("maybeTitle");
+        assertThat(maybeTitle.getOneOf()).hasSize(2);
+        assertThat(maybeTitle.getOneOf().get(0).get$ref())
             .isEqualTo("#/components/schemas/JsonStringValue");
-        assertThat(holderSchema.getProperties().get("maybePlainRecord").get$ref())
+
+        // Optional<PlainRecord> → oneOf with $ref and null type (OAS 3.1 nullable $ref)
+        Schema<?> maybePlainRecord = (Schema<?>) holderSchema.getProperties().get("maybePlainRecord");
+        assertThat(maybePlainRecord.getOneOf()).hasSize(2);
+        assertThat(maybePlainRecord.getOneOf().get(0).get$ref())
             .isEqualTo("#/components/schemas/PlainRecord");
+
         assertThat(schemas).doesNotContainKeys(
             "Optional", "JsonStringValue-nullable", "PlainRecord-nullable");
     }
@@ -623,5 +636,209 @@ class SchemaGeneratorTest {
         assertThat(discriminatorSchema.getConst()).isEqualTo(value);
         assertThat(discriminatorSchema.getEnum()).hasSize(1);
         assertThat(discriminatorSchema.getEnum().get(0)).isEqualTo(value);
+    }
+
+    // Clashing $ref resolution tests
+
+    @Test
+    void shouldFullyQualifyClashingInnerEnumNames() {
+        // Generate schemas for both notification types — each has an inner Status enum
+        generator.generateSchema(EmailNotification.class);
+        generator.generateSchema(SmsNotification.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // Both notification schemas should exist
+        assertThat(schemas).containsKey("EmailNotification");
+        assertThat(schemas).containsKey("SmsNotification");
+
+        // The two Status enums must be stored under qualified names, not bare "Status"
+        assertThat(schemas).containsKey("EmailNotificationStatus");
+        assertThat(schemas).containsKey("SmsNotificationStatus");
+        // Bare "Status" should NOT exist as a component
+        assertThat(schemas).doesNotContainKey("Status");
+    }
+
+    @Test
+    void shouldAssignCorrectEnumValuesToQualifiedStatusSchemas() {
+        generator.generateSchema(EmailNotification.class);
+        generator.generateSchema(SmsNotification.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        Schema<?> emailStatus = schemas.get("EmailNotificationStatus");
+        Schema<?> smsStatus = schemas.get("SmsNotificationStatus");
+
+        assertThat(emailStatus).isNotNull();
+        assertThat(smsStatus).isNotNull();
+
+        // EmailNotification.Status: QUEUED, SENT, DELIVERED, BOUNCED
+        @SuppressWarnings("unchecked")
+        List<String> emailEnumValues = (List<String>) (List<?>) emailStatus.getEnum();
+        assertThat(emailEnumValues).containsExactlyInAnyOrder("QUEUED", "SENT", "DELIVERED", "BOUNCED");
+
+        // SmsNotification.Status: QUEUED, SENT, FAILED
+        @SuppressWarnings("unchecked")
+        List<String> smsEnumValues = (List<String>) (List<?>) smsStatus.getEnum();
+        assertThat(smsEnumValues).containsExactlyInAnyOrder("QUEUED", "SENT", "FAILED");
+    }
+
+    @Test
+    void shouldPointRefsToCorrectQualifiedSchemaNames() {
+        generator.generateSchema(EmailNotification.class);
+        generator.generateSchema(SmsNotification.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // EmailNotification's status property should reference EmailNotificationStatus
+        Schema<?> emailSchema = schemas.get("EmailNotification");
+        Schema<?> emailStatusProp = emailSchema.getProperties().get("status");
+        assertThat(emailStatusProp.get$ref()).isEqualTo("#/components/schemas/EmailNotificationStatus");
+
+        // SmsNotification's status property should reference SmsNotificationStatus
+        Schema<?> smsSchema = schemas.get("SmsNotification");
+        Schema<?> smsStatusProp = smsSchema.getProperties().get("status");
+        assertThat(smsStatusProp.get$ref()).isEqualTo("#/components/schemas/SmsNotificationStatus");
+    }
+
+    @Test
+    void shouldFullyQualifyClashingNamesRegardlessOfGenerationOrder() {
+        // Generate in reverse order to ensure order-independence
+        generator.generateSchema(SmsNotification.class);
+        generator.generateSchema(EmailNotification.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // Both qualified names should exist regardless of order
+        assertThat(schemas).containsKey("EmailNotificationStatus");
+        assertThat(schemas).containsKey("SmsNotificationStatus");
+        assertThat(schemas).doesNotContainKey("Status");
+
+        // Enum values should still be correct
+        @SuppressWarnings("unchecked")
+        List<String> emailEnumValues = (List<String>) (List<?>) schemas.get("EmailNotificationStatus").getEnum();
+        assertThat(emailEnumValues).containsExactlyInAnyOrder("QUEUED", "SENT", "DELIVERED", "BOUNCED");
+        @SuppressWarnings("unchecked")
+        List<String> smsEnumValues = (List<String>) (List<?>) schemas.get("SmsNotificationStatus").getEnum();
+        assertThat(smsEnumValues).containsExactlyInAnyOrder("QUEUED", "SENT", "FAILED");
+    }
+
+    @Test
+    void shouldNotQualifyNonClashingEnumNames() {
+        // CustomerStatus doesn't clash with anything — should keep its simple name
+        generator.generateSchema(FullCustomer.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        assertThat(schemas).containsKey("CustomerStatus");
+    }
+
+    @Test
+    void shouldFullyQualifyClashingStatusEnumsInNestedHierarchy() {
+        // Reproduces the pattern: a parent type (ActiveDispatchGroup) and a child type
+        // (DispatchLineItem) both have inner Status enums with different values.
+        // The response wrapper generates the full hierarchy in one call.
+        generator.generateSchema(ActiveDispatchGroupsResponse.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // Both qualified Status schemas should exist
+        assertThat(schemas).containsKey("ActiveDispatchGroupStatus");
+        assertThat(schemas).containsKey("DispatchLineItemStatus");
+        // No unqualified "Status" should remain
+        assertThat(schemas).doesNotContainKey("Status");
+
+        // Verify correct enum values for each
+        @SuppressWarnings("unchecked")
+        List<String> groupStatusValues = (List<String>) (List<?>) schemas.get("ActiveDispatchGroupStatus").getEnum();
+        assertThat(groupStatusValues).containsExactlyInAnyOrder("PENDING", "DISPATCHED");
+
+        @SuppressWarnings("unchecked")
+        List<String> lineItemStatusValues = (List<String>) (List<?>) schemas.get("DispatchLineItemStatus").getEnum();
+        assertThat(lineItemStatusValues).containsExactlyInAnyOrder("PENDING", "DISPATCHED", "CANCELLED");
+    }
+
+    @Test
+    void shouldPointRefsToCorrectQualifiedStatusInNestedHierarchy() {
+        generator.generateSchema(ActiveDispatchGroupsResponse.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // ActiveDispatchGroup.status should reference ActiveDispatchGroupStatus
+        Schema<?> groupSchema = schemas.get("ActiveDispatchGroup");
+        assertThat(groupSchema).isNotNull();
+        Schema<?> groupStatusProp = groupSchema.getProperties().get("status");
+        assertThat(groupStatusProp.get$ref()).isEqualTo("#/components/schemas/ActiveDispatchGroupStatus");
+
+        // DispatchLineItem.status should reference DispatchLineItemStatus
+        Schema<?> lineItemSchema = schemas.get("DispatchLineItem");
+        assertThat(lineItemSchema).isNotNull();
+        Schema<?> lineItemStatusProp = lineItemSchema.getProperties().get("status");
+        assertThat(lineItemStatusProp.get$ref()).isEqualTo("#/components/schemas/DispatchLineItemStatus");
+    }
+
+    @Test
+    void shouldFullyQualifyClashingInnerRecordNames() {
+        generator.generateSchema(ReportsResponse.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // Both MonthlyReport.Summary and WeeklyReport.Summary should have qualified names
+        assertThat(schemas).containsKey("MonthlyReportSummary");
+        assertThat(schemas).containsKey("WeeklyReportSummary");
+
+        // Both MonthlyReport.Charts and WeeklyReport.Charts should have qualified names
+        assertThat(schemas).containsKey("MonthlyReportCharts");
+        assertThat(schemas).containsKey("WeeklyReportCharts");
+
+        // The ambiguous simple names should NOT exist
+        assertThat(schemas).doesNotContainKey("Summary");
+        assertThat(schemas).doesNotContainKey("Charts");
+    }
+
+    @Test
+    void shouldStoreCorrectPropertiesForQualifiedInnerRecordSchemas() {
+        generator.generateSchema(ReportsResponse.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // MonthlyReportSummary should have totalRevenue, totalOrders, averageOrderValue
+        Schema<?> monthlySummary = schemas.get("MonthlyReportSummary");
+        assertThat(monthlySummary).isNotNull();
+        assertThat(monthlySummary.getProperties()).containsKey("totalRevenue");
+        assertThat(monthlySummary.getProperties()).containsKey("totalOrders");
+        assertThat(monthlySummary.getProperties()).containsKey("averageOrderValue");
+
+        // WeeklyReportSummary should have weeklyRevenue, weeklyOrders
+        Schema<?> weeklySummary = schemas.get("WeeklyReportSummary");
+        assertThat(weeklySummary).isNotNull();
+        assertThat(weeklySummary.getProperties()).containsKey("weeklyRevenue");
+        assertThat(weeklySummary.getProperties()).containsKey("weeklyOrders");
+    }
+
+    @Test
+    void shouldPointRefsToCorrectQualifiedInnerRecordNames() {
+        generator.generateSchema(ReportsResponse.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+
+        // MonthlyReport.summary should reference MonthlyReportSummary
+        Schema<?> monthlyReport = schemas.get("MonthlyReport");
+        assertThat(monthlyReport).isNotNull();
+        Schema<?> monthlySummaryProp = monthlyReport.getProperties().get("summary");
+        assertThat(monthlySummaryProp.get$ref()).isEqualTo("#/components/schemas/MonthlyReportSummary");
+
+        // MonthlyReport.charts should reference MonthlyReportCharts
+        Schema<?> monthlyChartsProp = monthlyReport.getProperties().get("charts");
+        assertThat(monthlyChartsProp.get$ref()).isEqualTo("#/components/schemas/MonthlyReportCharts");
+
+        // WeeklyReport.summary should reference WeeklyReportSummary
+        Schema<?> weeklyReport = schemas.get("WeeklyReport");
+        assertThat(weeklyReport).isNotNull();
+        Schema<?> weeklySummaryProp = weeklyReport.getProperties().get("summary");
+        assertThat(weeklySummaryProp.get$ref()).isEqualTo("#/components/schemas/WeeklyReportSummary");
+
+        // WeeklyReport.charts should reference WeeklyReportCharts
+        Schema<?> weeklyChartsProp = weeklyReport.getProperties().get("charts");
+        assertThat(weeklyChartsProp.get$ref()).isEqualTo("#/components/schemas/WeeklyReportCharts");
     }
 }
