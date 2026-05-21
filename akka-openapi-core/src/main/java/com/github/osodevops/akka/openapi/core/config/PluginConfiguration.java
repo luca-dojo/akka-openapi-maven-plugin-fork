@@ -149,7 +149,7 @@ public class PluginConfiguration {
         private boolean includeSecuritySchemes = true;
         private boolean failOnValidationError = true;
         private List<SecuritySchemeConfig> securitySchemes = new ArrayList<>();
-        private boolean stripServerPathPrefix = false;
+        private boolean stripServerPathPrefix = true;
 
         public Builder apiTitle(String apiTitle) {
             this.apiTitle = Objects.requireNonNull(apiTitle, "apiTitle must not be null");

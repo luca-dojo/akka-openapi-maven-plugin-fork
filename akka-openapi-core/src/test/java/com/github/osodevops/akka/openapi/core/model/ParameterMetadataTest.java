@@ -142,4 +142,30 @@ class ParameterMetadataTest {
             .contains("String")
             .contains("required=true");
     }
+
+    @Test
+    void shouldSupportMinimumAndMaximum() {
+        ParameterMetadata metadata = ParameterMetadata.builder()
+            .name("limit")
+            .location(ParameterMetadata.ParameterLocation.QUERY)
+            .javaType(Integer.class)
+            .minimum(new java.math.BigDecimal("1"))
+            .maximum(new java.math.BigDecimal("100"))
+            .build();
+
+        assertThat(metadata.getMinimum()).isEqualByComparingTo("1");
+        assertThat(metadata.getMaximum()).isEqualByComparingTo("100");
+    }
+
+    @Test
+    void shouldDefaultMinimumAndMaximumToNull() {
+        ParameterMetadata metadata = ParameterMetadata.builder()
+            .name("id")
+            .location(ParameterMetadata.ParameterLocation.QUERY)
+            .javaType(String.class)
+            .build();
+
+        assertThat(metadata.getMinimum()).isNull();
+        assertThat(metadata.getMaximum()).isNull();
+    }
 }

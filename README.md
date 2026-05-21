@@ -363,6 +363,135 @@ public class CustomerEndpoint {
 `@OpenAPISummary("...")` populates the operation's `summary` field — a short,
 single-line label shown in tools like Swagger UI.
 
+### Explicit Query Parameters
+
+When query parameters are read dynamically from the request context rather than declared as
+typed Java method parameters, use `@OpenAPIQueryParam` to document them.
+
+#### Integer parameter
+
+```java
+@Get("/products")
+@OpenAPISummary("List products")
+@OpenAPIQueryParam(
+    name = "limit",
+    description = "Maximum number of products to return",
+    type = Integer.class,
+    format = "int32",
+    minimum = "1",
+    maximum = "200",
+    defaultValue = "20"
+)
+public List<Product> listProducts() {
+    int limit = requestContext().queryParams().getInteger("limit").orElse(20);
+    // ...
+}
+```
+
+Generates:
+
+```yaml
+parameters:
+  - name: limit
+    in: query
+    required: false
+    description: Maximum number of products to return
+    schema:
+      type: integer
+      format: int32
+      minimum: 1
+      maximum: 200
+      default: 20
+```
+
+#### String parameter
+
+```java
+@OpenAPIQueryParam(
+    name = "search",
+    description = "Filter products by keyword"
+)
+```
+
+Generates:
+
+```yaml
+parameters:
+  - name: search
+    in: query
+    required: false
+    description: Filter products by keyword
+    schema:
+      type: string
+```
+
+`String` is the default type — omitting `type` produces the same output.
+
+#### Boolean parameter
+
+```java
+@OpenAPIQueryParam(
+    name = "includeDiscontinued",
+    description = "When true, discontinued products are included in the response",
+    type = Boolean.class,
+    defaultValue = "false"
+)
+```
+
+Generates:
+
+```yaml
+parameters:
+  - name: includeDiscontinued
+    in: query
+    required: false
+    description: When true, discontinued products are included in the response
+    schema:
+      type: boolean
+      default: false
+```
+
+All three types may be combined on a single method by repeating the annotation:
+
+```java
+@Get("/products")
+@OpenAPIQueryParam(
+    name = "limit",
+    description = "Maximum number of products to return",
+    type = Integer.class, format = "int32", minimum = "1", maximum = "200", defaultValue = "20"
+)
+@OpenAPIQueryParam(
+    name = "search",
+    description = "Filter products by keyword"
+)
+@OpenAPIQueryParam(
+    name = "includeDiscontinued",
+    description = "When true, discontinued products are included in the response",
+    type = Boolean.class, defaultValue = "false"
+)
+public List<Product> listProducts() { ... }
+```
+
+The annotation can also enrich a typed method parameter that the extractor has already
+detected — for example to add a description or a `minimum` constraint:
+
+```java
+@Get
+@OpenAPIQueryParam(name = "page", description = "0-indexed page number", minimum = "0")
+public PagedResponse<Customer> listCustomers(Integer page, Integer size) { ... }
+```
+
+| Annotation attribute | OpenAPI schema field | Notes |
+|---|---|---|
+| `name` | `parameters[].name` | Required |
+| `description` | `parameters[].description` | |
+| `required` | `parameters[].required` | Default `false` |
+| `type` | `schema.type` | `Void.class` (default) resolves to `String` |
+| `format` | `schema.format` | e.g. `"int32"`, `"int64"`, `"date-time"` |
+| `minimum` | `schema.minimum` | Parsed as `BigDecimal` |
+| `maximum` | `schema.maximum` | Parsed as `BigDecimal` |
+| `defaultValue` | `schema.default` | Parsed to the resolved Java type |
+
 ### Low-Level HttpResponse Return Types
 
 When an endpoint returns a domain object directly, the plugin infers the response

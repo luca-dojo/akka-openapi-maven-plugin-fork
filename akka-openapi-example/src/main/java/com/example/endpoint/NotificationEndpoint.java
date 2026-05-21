@@ -3,7 +3,12 @@ package com.example.endpoint;
 import akka.javasdk.annotations.http.Get;
 import akka.javasdk.annotations.http.HttpEndpoint;
 import akka.javasdk.annotations.http.Post;
+import com.example.dto.DeliveryMethod;
 import com.example.dto.Notification;
+import com.example.dto.NotificationGroup;
+import com.example.dto.NotificationGroupsResponse;
+import com.example.dto.ScheduleDeliveryCommand;
+import com.example.dto.SendNotificationCommand;
 import com.github.osodevops.akka.openapi.annotations.OpenAPIResponse;
 import com.github.osodevops.akka.openapi.annotations.OpenAPIResponseSchema;
 import com.github.osodevops.akka.openapi.annotations.OpenAPISummary;
@@ -27,16 +32,16 @@ public class NotificationEndpoint {
      * <p>The notification type is determined by the {@code channel} discriminator
      * property which can be EMAIL, SMS, or PUSH.</p>
      *
-     * @param notification the notification to send
+     * @param command the notification command to send
      * @return the sent notification with delivery status
      */
     @Post
     @OpenAPISummary("Send a notification")
     @OpenAPIResponse(status = "201", description = "Notification sent successfully")
     @OpenAPIResponse(status = "400", description = "Invalid notification data")
-    public Notification sendNotification(Notification notification) {
+    public Notification sendNotification(SendNotificationCommand command) {
         // Implementation would go here
-        return notification;
+        return command.notification();
     }
 
     /**
@@ -65,5 +70,57 @@ public class NotificationEndpoint {
     public List<Notification> listNotifications(String recipientId) {
         // Implementation would go here
         return List.of();
+    }
+
+    /**
+     * Retrieves notification groups for a recipient.
+     *
+     * <p>This endpoint uses {@link NotificationGroup} which contains an inner sealed
+     * interface {@code ChannelConfig} with inner record subtypes ({@code EmailConfig},
+     * {@code SmsConfig}, {@code PushConfig}). This reproduces the bug where inner-class
+     * polymorphic subtypes are missing from {@code components/schemas} in the generated spec.</p>
+     *
+     * @param recipientId the recipient identifier
+     * @return grouped notifications
+     */
+    @Get("/{recipientId}/groups")
+    @OpenAPISummary("List notification groups for recipient")
+    @OpenAPIResponseSchema(NotificationGroupsResponse.class)
+    public NotificationGroupsResponse listNotificationGroups(String recipientId) {
+        // Implementation would go here
+        return new NotificationGroupsResponse(recipientId, List.of(), 0);
+    }
+
+    /**
+     * Schedules a delivery for an order.
+     *
+     * <p>Reproduces the {@code VariantProductGroup.VariantProduct} pattern: the
+     * {@code DeliveryMethod} sealed interface has subtypes {@code StandardDelivery},
+     * {@code ExpressDelivery} (top-level), and {@code DeliveryVariantGroup.VariantDelivery}
+     * (inner class of a different outer class). This triggers victools to generate
+     * numbered defs like {@code VariantDelivery-2} that must be aliased away.</p>
+     *
+     * @param command the delivery scheduling command
+     * @return the scheduled delivery method
+     */
+    @Post("/deliveries")
+    @OpenAPISummary("Schedule a delivery")
+    @OpenAPIResponse(status = "201", description = "Delivery scheduled successfully")
+    @OpenAPIResponse(status = "400", description = "Invalid delivery data")
+    public DeliveryMethod scheduleDelivery(ScheduleDeliveryCommand command) {
+        return command.method();
+    }
+
+    /**
+     * Gets the delivery method for an order.
+     *
+     * @param orderId the order identifier
+     * @return the delivery method
+     */
+    @Get("/deliveries/{orderId}")
+    @OpenAPISummary("Get delivery method for order")
+    @OpenAPIResponseSchema(DeliveryMethod.class)
+    public DeliveryMethod getDelivery(String orderId) {
+        return null;
     }
 }

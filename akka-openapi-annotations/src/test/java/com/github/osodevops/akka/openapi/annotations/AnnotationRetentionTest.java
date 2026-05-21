@@ -53,4 +53,16 @@ class AnnotationRetentionTest {
         assertThat(OpenAPIResponseSchema.class.getAnnotation(Retention.class).value())
             .isEqualTo(RetentionPolicy.RUNTIME);
     }
+
+    @Test
+    void openAPIQueryParamShouldHaveRuntimeRetention() {
+        assertThat(OpenAPIQueryParam.class.getAnnotation(Retention.class).value())
+            .isEqualTo(RetentionPolicy.RUNTIME);
+    }
+
+    @Test
+    void openAPIQueryParamsShouldHaveRuntimeRetention() {
+        assertThat(OpenAPIQueryParams.class.getAnnotation(Retention.class).value())
+            .isEqualTo(RetentionPolicy.RUNTIME);
+    }
 }
