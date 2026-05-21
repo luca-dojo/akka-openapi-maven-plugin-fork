@@ -226,9 +226,9 @@ public class SchemaGenerator {
                 if (erasedType.isEnum()) {
                     return null;
                 }
-                Type valueType = findJsonValueType(erasedType);
-                if (valueType != null) {
-                    ObjectNode schema = createJsonValueDefinition(valueType, context);
+                JsonValueSource source = findJsonValueSource(erasedType);
+                if (source != null) {
+                    ObjectNode schema = createJsonValueDefinition(source, context);
                     return new CustomDefinition(schema);
                 }
                 return null;
@@ -649,6 +649,9 @@ public class SchemaGenerator {
             } else {
                 ensureDiscriminatorProperty(subSchema, discriminatorProperty, subType.discriminatorValue());
             }
+            // Tooling (Swagger UI, Redoc, Stoplight) labels each oneOf branch from the
+            // referenced schema's title, so make sure each subtype carries one.
+            ensurePolymorphicSubtypeTitle(subSchema, subTypeName);
 
             Schema<?> ref = new Schema<>();
             ref.set$ref("#/components/schemas/" + subTypeName);
@@ -698,8 +701,16 @@ public class SchemaGenerator {
             subSchema = new ObjectSchema();
         }
         ensureDiscriminatorProperty(subSchema, discriminatorProperty, discriminatorValue);
+        ensurePolymorphicSubtypeTitle(subSchema, subTypeName);
         generatedSchemas.put(subTypeName, subSchema);
         return subSchema;
+    }
+
+    private void ensurePolymorphicSubtypeTitle(Schema<?> subSchema, String subTypeName) {
+        if (subSchema == null || subSchema.get$ref() != null) return;
+        if (subSchema.getTitle() == null || subSchema.getTitle().isBlank()) {
+            subSchema.setTitle(subTypeName);
+        }
     }
 
     private boolean isEmptyObjectSchema(Schema<?> schema) {
@@ -892,33 +903,19 @@ public class SchemaGenerator {
         if (clazz.isEnum()) {
             return null;
         }
-
-        // Check record components for @JsonValue
-        java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
-        if (components != null) {
-            for (java.lang.reflect.RecordComponent component : components) {
-                if (hasJsonValueAnnotation(component.getAccessor()) ||
-                    hasJsonValueAnnotation(component)) {
-                    return mapJavaTypeToSchema(component.getType(), component.getGenericType());
-                }
-            }
+        JsonValueSource source = findJsonValueSource(clazz);
+        if (source == null) {
+            return null;
         }
-
-        // Check methods for @JsonValue
-        for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
-            if (method.getParameterCount() == 0 && hasJsonValueAnnotation(method)) {
-                return mapJavaTypeToSchema(method.getReturnType(), method.getGenericReturnType());
-            }
+        Class<?> rawClass = getRawClass(source.type());
+        if (rawClass == null) {
+            return null;
         }
-
-        // Check fields for @JsonValue
-        for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
-            if (hasJsonValueAnnotation(field)) {
-                return mapJavaTypeToSchema(field.getType(), field.getGenericType());
-            }
+        Schema<?> schema = mapJavaTypeToSchema(rawClass, source.type());
+        if (schema != null) {
+            applyJakartaConstraintsToSchema(schema, source.primary(), source.accessor());
         }
-
-        return null;
+        return schema;
     }
 
     /**
@@ -936,41 +933,48 @@ public class SchemaGenerator {
     }
 
     /**
-     * Finds the type of the @JsonValue-annotated member in a class, or null if not found.
+     * Locates the @JsonValue-annotated member in a class along with the annotated elements
+     * (member + accessor) that may carry Jakarta Validation constraints. Returns null if
+     * no @JsonValue is found.
      */
-    private Type findJsonValueType(Class<?> clazz) {
-        // Check record components
+    private JsonValueSource findJsonValueSource(Class<?> clazz) {
         java.lang.reflect.RecordComponent[] components = clazz.getRecordComponents();
         if (components != null) {
             for (java.lang.reflect.RecordComponent component : components) {
-                if (hasJsonValueAnnotation(component.getAccessor()) ||
-                    hasJsonValueAnnotation(component)) {
-                    return component.getGenericType();
+                java.lang.reflect.Method accessor = component.getAccessor();
+                if (hasJsonValueAnnotation(accessor) || hasJsonValueAnnotation(component)) {
+                    return new JsonValueSource(component.getGenericType(), component, accessor);
                 }
             }
         }
-        // Check methods
         for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
             if (method.getParameterCount() == 0 && hasJsonValueAnnotation(method)) {
-                return method.getGenericReturnType();
+                return new JsonValueSource(method.getGenericReturnType(), method, null);
             }
         }
-        // Check fields
         for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
             if (hasJsonValueAnnotation(field)) {
-                return field.getGenericType();
+                return new JsonValueSource(field.getGenericType(), field, null);
             }
         }
         return null;
     }
 
-    private ObjectNode createJsonValueDefinition(Type valueType, SchemaGenerationContext context) {
-        Class<?> rawClass = getRawClass(valueType);
+    private Type findJsonValueType(Class<?> clazz) {
+        JsonValueSource source = findJsonValueSource(clazz);
+        return source != null ? source.type() : null;
+    }
+
+    private record JsonValueSource(Type type, AnnotatedElement primary, AnnotatedElement accessor) {}
+
+    private ObjectNode createJsonValueDefinition(JsonValueSource source, SchemaGenerationContext context) {
+        Class<?> rawClass = getRawClass(source.type());
         ObjectNode simpleSchema = rawClass != null ? createSimpleJsonSchema(rawClass) : null;
-        if (simpleSchema != null) {
-            return simpleSchema;
+        if (simpleSchema == null) {
+            return context.createDefinition(context.getTypeContext().resolve(source.type()));
         }
-        return context.createDefinition(context.getTypeContext().resolve(valueType));
+        applyJakartaConstraintsToObjectNode(simpleSchema, source.primary(), source.accessor());
+        return simpleSchema;
     }
 
     private ObjectNode createSimpleJsonSchema(Class<?> type) {
@@ -1026,6 +1030,228 @@ public class SchemaGenerator {
             return null;
         }
         return schema;
+    }
+
+    private static final String JAKARTA_CONSTRAINTS_PKG = "jakarta.validation.constraints.";
+
+    /**
+     * Applies Jakarta Validation constraints (read from the given annotated elements) as
+     * JSON Schema keywords on the supplied ObjectNode. Used for the @JsonValue unwrap
+     * path where victools' own JakartaValidationModule does not run.
+     */
+    private void applyJakartaConstraintsToObjectNode(ObjectNode schema, AnnotatedElement... sources) {
+        String typeStr = schema.path("type").asText("");
+        for (AnnotatedElement source : sources) {
+            if (source == null) continue;
+            for (java.lang.annotation.Annotation ann : source.getAnnotations()) {
+                try {
+                    applyAnnotationToObjectNode(schema, typeStr, ann);
+                } catch (Exception ignored) {
+                    // Defensive: skip any annotation whose accessors don't match expected shapes.
+                }
+            }
+        }
+    }
+
+    private void applyAnnotationToObjectNode(ObjectNode schema, String typeStr,
+            java.lang.annotation.Annotation ann) throws Exception {
+        String name = ann.annotationType().getName();
+        if (!name.startsWith(JAKARTA_CONSTRAINTS_PKG)) return;
+        String simple = name.substring(JAKARTA_CONSTRAINTS_PKG.length());
+        switch (simple) {
+            case "DecimalMin": {
+                BigDecimal v = new BigDecimal(invokeAnnotationString(ann, "value"));
+                if (invokeAnnotationBoolean(ann, "inclusive")) schema.put("minimum", v);
+                else schema.put("exclusiveMinimum", v);
+                break;
+            }
+            case "DecimalMax": {
+                BigDecimal v = new BigDecimal(invokeAnnotationString(ann, "value"));
+                if (invokeAnnotationBoolean(ann, "inclusive")) schema.put("maximum", v);
+                else schema.put("exclusiveMaximum", v);
+                break;
+            }
+            case "Min":
+                schema.put("minimum", BigDecimal.valueOf(invokeAnnotationLong(ann, "value")));
+                break;
+            case "Max":
+                schema.put("maximum", BigDecimal.valueOf(invokeAnnotationLong(ann, "value")));
+                break;
+            case "Positive":
+                schema.put("exclusiveMinimum", BigDecimal.ZERO);
+                break;
+            case "PositiveOrZero":
+                schema.put("minimum", BigDecimal.ZERO);
+                break;
+            case "Negative":
+                schema.put("exclusiveMaximum", BigDecimal.ZERO);
+                break;
+            case "NegativeOrZero":
+                schema.put("maximum", BigDecimal.ZERO);
+                break;
+            case "Size": {
+                int min = invokeAnnotationInt(ann, "min");
+                int max = invokeAnnotationInt(ann, "max");
+                if ("string".equals(typeStr)) {
+                    if (min > 0) schema.put("minLength", min);
+                    if (max < Integer.MAX_VALUE) schema.put("maxLength", max);
+                } else if ("array".equals(typeStr)) {
+                    if (min > 0) schema.put("minItems", min);
+                    if (max < Integer.MAX_VALUE) schema.put("maxItems", max);
+                } else if ("object".equals(typeStr)) {
+                    if (min > 0) schema.put("minProperties", min);
+                    if (max < Integer.MAX_VALUE) schema.put("maxProperties", max);
+                }
+                break;
+            }
+            case "NotBlank":
+            case "NotEmpty":
+                if ("string".equals(typeStr)) {
+                    if (!schema.has("minLength")) schema.put("minLength", 1);
+                } else if ("array".equals(typeStr)) {
+                    if (!schema.has("minItems")) schema.put("minItems", 1);
+                } else if ("object".equals(typeStr)) {
+                    if (!schema.has("minProperties")) schema.put("minProperties", 1);
+                }
+                break;
+            case "Pattern":
+                schema.put("pattern", invokeAnnotationString(ann, "regexp"));
+                break;
+            case "Digits": {
+                int integerDigits = invokeAnnotationInt(ann, "integer");
+                int fractionDigits = invokeAnnotationInt(ann, "fraction");
+                String pattern = fractionDigits > 0
+                    ? "^-?\\d{0," + integerDigits + "}(\\.\\d{1," + fractionDigits + "})?$"
+                    : "^-?\\d{0," + integerDigits + "}$";
+                if (!schema.has("pattern")) schema.put("pattern", pattern);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /**
+     * Applies Jakarta Validation constraints directly to a swagger Schema, for the
+     * reflection-based @JsonValue path where the ObjectNode pipeline is skipped.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void applyJakartaConstraintsToSchema(Schema<?> schema, AnnotatedElement... sources) {
+        if (schema == null) return;
+        String typeStr = inferSchemaTypeKey(schema);
+        for (AnnotatedElement source : sources) {
+            if (source == null) continue;
+            for (java.lang.annotation.Annotation ann : source.getAnnotations()) {
+                try {
+                    applyAnnotationToSchema(schema, typeStr, ann);
+                } catch (Exception ignored) {
+                    // Defensive: skip annotations whose shapes don't match expectations.
+                }
+            }
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void applyAnnotationToSchema(Schema schema, String typeStr,
+            java.lang.annotation.Annotation ann) throws Exception {
+        String name = ann.annotationType().getName();
+        if (!name.startsWith(JAKARTA_CONSTRAINTS_PKG)) return;
+        String simple = name.substring(JAKARTA_CONSTRAINTS_PKG.length());
+        switch (simple) {
+            case "DecimalMin": {
+                BigDecimal v = new BigDecimal(invokeAnnotationString(ann, "value"));
+                if (invokeAnnotationBoolean(ann, "inclusive")) schema.setMinimum(v);
+                else schema.setExclusiveMinimumValue(v);
+                break;
+            }
+            case "DecimalMax": {
+                BigDecimal v = new BigDecimal(invokeAnnotationString(ann, "value"));
+                if (invokeAnnotationBoolean(ann, "inclusive")) schema.setMaximum(v);
+                else schema.setExclusiveMaximumValue(v);
+                break;
+            }
+            case "Min":
+                schema.setMinimum(BigDecimal.valueOf(invokeAnnotationLong(ann, "value")));
+                break;
+            case "Max":
+                schema.setMaximum(BigDecimal.valueOf(invokeAnnotationLong(ann, "value")));
+                break;
+            case "Positive":
+                schema.setExclusiveMinimumValue(BigDecimal.ZERO);
+                break;
+            case "PositiveOrZero":
+                schema.setMinimum(BigDecimal.ZERO);
+                break;
+            case "Negative":
+                schema.setExclusiveMaximumValue(BigDecimal.ZERO);
+                break;
+            case "NegativeOrZero":
+                schema.setMaximum(BigDecimal.ZERO);
+                break;
+            case "Size": {
+                int min = invokeAnnotationInt(ann, "min");
+                int max = invokeAnnotationInt(ann, "max");
+                if ("string".equals(typeStr)) {
+                    if (min > 0) schema.setMinLength(min);
+                    if (max < Integer.MAX_VALUE) schema.setMaxLength(max);
+                } else if ("array".equals(typeStr)) {
+                    if (min > 0) schema.setMinItems(min);
+                    if (max < Integer.MAX_VALUE) schema.setMaxItems(max);
+                }
+                break;
+            }
+            case "NotBlank":
+            case "NotEmpty":
+                if ("string".equals(typeStr)) {
+                    if (schema.getMinLength() == null) schema.setMinLength(1);
+                } else if ("array".equals(typeStr)) {
+                    if (schema.getMinItems() == null) schema.setMinItems(1);
+                }
+                break;
+            case "Pattern":
+                schema.setPattern(invokeAnnotationString(ann, "regexp"));
+                break;
+            case "Digits": {
+                int integerDigits = invokeAnnotationInt(ann, "integer");
+                int fractionDigits = invokeAnnotationInt(ann, "fraction");
+                String pattern = fractionDigits > 0
+                    ? "^-?\\d{0," + integerDigits + "}(\\.\\d{1," + fractionDigits + "})?$"
+                    : "^-?\\d{0," + integerDigits + "}$";
+                if (schema.getPattern() == null) schema.setPattern(pattern);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    private static String inferSchemaTypeKey(Schema<?> schema) {
+        if (schema.getType() != null) return schema.getType();
+        if (schema instanceof StringSchema) return "string";
+        if (schema instanceof IntegerSchema) return "integer";
+        if (schema instanceof NumberSchema) return "number";
+        if (schema instanceof ArraySchema) return "array";
+        return "";
+    }
+
+    private static String invokeAnnotationString(java.lang.annotation.Annotation ann, String method)
+            throws Exception {
+        return (String) ann.annotationType().getMethod(method).invoke(ann);
+    }
+
+    private static boolean invokeAnnotationBoolean(java.lang.annotation.Annotation ann, String method)
+            throws Exception {
+        return (Boolean) ann.annotationType().getMethod(method).invoke(ann);
+    }
+
+    private static int invokeAnnotationInt(java.lang.annotation.Annotation ann, String method)
+            throws Exception {
+        return (Integer) ann.annotationType().getMethod(method).invoke(ann);
+    }
+
+    private static long invokeAnnotationLong(java.lang.annotation.Annotation ann, String method)
+            throws Exception {
+        return (Long) ann.annotationType().getMethod(method).invoke(ann);
     }
 
     /**
@@ -1993,6 +2219,12 @@ public class SchemaGenerator {
             if (node.has("maximum")) {
                 integerSchema.setMaximum(BigDecimal.valueOf(node.get("maximum").asLong()));
             }
+            if (node.has("exclusiveMinimum") && node.get("exclusiveMinimum").isNumber()) {
+                integerSchema.setExclusiveMinimumValue(node.get("exclusiveMinimum").decimalValue());
+            }
+            if (node.has("exclusiveMaximum") && node.get("exclusiveMaximum").isNumber()) {
+                integerSchema.setExclusiveMaximumValue(node.get("exclusiveMaximum").decimalValue());
+            }
             schema = integerSchema;
         } else if ("number".equals(type)) {
             NumberSchema numberSchema = new NumberSchema();
@@ -2004,6 +2236,12 @@ public class SchemaGenerator {
             }
             if (node.has("maximum")) {
                 numberSchema.setMaximum(BigDecimal.valueOf(node.get("maximum").asDouble()));
+            }
+            if (node.has("exclusiveMinimum") && node.get("exclusiveMinimum").isNumber()) {
+                numberSchema.setExclusiveMinimumValue(node.get("exclusiveMinimum").decimalValue());
+            }
+            if (node.has("exclusiveMaximum") && node.get("exclusiveMaximum").isNumber()) {
+                numberSchema.setExclusiveMaximumValue(node.get("exclusiveMaximum").decimalValue());
             }
             schema = numberSchema;
         } else if ("boolean".equals(type)) {
