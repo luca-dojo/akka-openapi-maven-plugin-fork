@@ -19,7 +19,7 @@ import java.lang.annotation.Target;
  * name inferred as a query parameter, the annotation enriches the inferred entry
  * (description, minimum, maximum, default value, format) rather than duplicating it.</p>
  *
- * @since 1.1.0
+ * @since 1.5.0
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)

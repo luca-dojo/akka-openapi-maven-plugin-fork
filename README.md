@@ -31,7 +31,7 @@ Add the plugin to your `pom.xml`:
         <plugin>
             <groupId>sh.oso</groupId>
             <artifactId>akka-openapi-maven-plugin</artifactId>
-            <version>1.4.0</version>
+            <version>1.5.0</version>
             <executions>
                 <execution>
                     <goals>
@@ -159,7 +159,7 @@ components:
 <plugin>
     <groupId>sh.oso</groupId>
     <artifactId>akka-openapi-maven-plugin</artifactId>
-    <version>1.4.0</version>
+    <version>1.5.0</version>
     <configuration>
         <!-- Output settings -->
         <outputFile>${project.build.directory}/openapi.yaml</outputFile>

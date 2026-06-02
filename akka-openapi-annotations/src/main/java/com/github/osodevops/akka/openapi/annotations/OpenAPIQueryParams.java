@@ -12,7 +12,7 @@ import java.lang.annotation.Target;
  * <p>This annotation is used automatically when multiple {@code @OpenAPIQueryParam}
  * annotations are placed on the same method.</p>
  *
- * @since 1.1.0
+ * @since 1.5.0
  * @see OpenAPIQueryParam
  */
 @Target(ElementType.METHOD)

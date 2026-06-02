@@ -80,10 +80,22 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Set release version in POMs
+      - name: Verify checked-in release version
+        env:
+          EXPECTED_VERSION: ${{ steps.release-version.outputs.version }}
         run: |
-          mvn versions:set -DnewVersion=${{ steps.release-version.outputs.version }} --batch-mode --no-transfer-progress
-          mvn versions:commit --batch-mode --no-transfer-progress
+          POM_VERSION="$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)"
+          MANIFEST_VERSION="$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
+
+          if [ "$POM_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Root POM version $POM_VERSION does not match release version $EXPECTED_VERSION." >&2
+            exit 1
+          fi
+
+          if [ "$MANIFEST_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Release manifest version $MANIFEST_VERSION does not match release version $EXPECTED_VERSION." >&2
+            exit 1
+          fi
 
       - name: Build and test release version
         run: |
@@ -113,10 +125,22 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Set release version in POMs
+      - name: Verify checked-in release version
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          mvn versions:set -DnewVersion=${{ needs.validate.outputs.version }} --batch-mode --no-transfer-progress
-          mvn versions:commit --batch-mode --no-transfer-progress
+          POM_VERSION="$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)"
+          MANIFEST_VERSION="$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
+
+          if [ "$POM_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Root POM version $POM_VERSION does not match release version $EXPECTED_VERSION." >&2
+            exit 1
+          fi
+
+          if [ "$MANIFEST_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Release manifest version $MANIFEST_VERSION does not match release version $EXPECTED_VERSION." >&2
+            exit 1
+          fi
 
       - name: Check Maven Central credentials
         env:
