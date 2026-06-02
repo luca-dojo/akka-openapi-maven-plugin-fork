@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.5.0...HEAD)
+
+## [1.5.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.4.0...v1.5.0) (2026-06-02)
+
+### Features
+
+* add `@OpenAPIQueryParam` for explicit dynamic query parameter documentation
+* deduplicate nested component schemas when reused through response graphs
+
+### Bug Fixes
+
+* retain Jakarta constraints on `@JsonValue` wrapper schemas
+* add titles to polymorphic subtype schemas
+* mark nested non-optional fields as required
+* keep README usage examples aligned with the published version
+
+## [1.4.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.3.0...v1.4.0) (2026-05-06)
+
+### Features
+
+* support `Optional` and `@JsonValue` wrapper schemas
+* support optional deserialisation of records
+
+### Documentation
+
+* update usage examples for the published release
+
 ## [1.3.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.2.0...v1.3.0) (2026-05-06)
 
 
@@ -49,8 +76,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * document &lt;security&gt; block + @OpenAPISummary; expose includeSecuritySchemes flag ([dccdaee](https://github.com/osodevops/akka-openapi-maven-plugin/commit/dccdaee86fe659ce52f231aa6e93684aa171d42c))
 * prepare CHANGELOG for v1.0.1 release ([910ca5c](https://github.com/osodevops/akka-openapi-maven-plugin/commit/910ca5c44827f0c8808fea36f64df1d6ced349e8))
-
-## [Unreleased]
 
 ## [1.2.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.1.0...v1.2.0) (2026-05-06)
 
@@ -143,7 +168,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Jackson 2.18.2
 - Java 17+
 
-[Unreleased]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.2.0...HEAD
 [1.0.1]: https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/osodevops/akka-openapi-maven-plugin/releases/tag/v1.0.0
 [#17]: https://github.com/osodevops/akka-openapi-maven-plugin/issues/17
