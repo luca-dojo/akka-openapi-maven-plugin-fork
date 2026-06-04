@@ -280,9 +280,11 @@ public class SchemaGenerator {
             return null;
         }
 
-        // Suppress framework-internal Akka/Scala types — treat as opaque object
+        // Suppress framework-internal Akka/Scala types — treat as opaque object.
+        // Use package-based check on the actual Class<?> to avoid false-positives on
+        // user-defined classes whose simple names collide with Akka internals (e.g. "Source").
         String earlyTypeName = getTypeName(rawClass);
-        if (isInternalSchemaName(earlyTypeName)) {
+        if (isInternalClass(rawClass)) {
             logger.accept("Suppressing internal framework type: " + earlyTypeName);
             return new ObjectSchema();
         }
@@ -309,8 +311,11 @@ public class SchemaGenerator {
             typeName = getTypeName(rawClass);
         }
 
-        // Also check the full specialized type name (e.g. Source_Object_NotUsed_)
-        if (isInternalSchemaName(typeName)) {
+        // Also check the full specialized type name (e.g. Source_Object_NotUsed_).
+        // Use the rawClass for class-based suppression; fall back to name-based check
+        // only for names that cannot be false-positives (they have structural markers
+        // like underscores that user types never produce).
+        if (isInternalSchemaName(typeName) && isInternalClass(rawClass)) {
             logger.accept("Suppressing internal framework type: " + typeName);
             return new ObjectSchema();
         }
@@ -2514,11 +2519,31 @@ public class SchemaGenerator {
      *   <li>{@code Done} — Akka's akka.Done</li>
      * </ul>
      */
+    /**
+     * Returns true if the schema name refers to an Akka/Scala framework-internal type that
+     * should be suppressed from the generated OpenAPI spec.
+     *
+     * <p>When the actual {@link Class} is available, prefer {@link #isInternalClass(Class)}
+     * which makes package-based decisions and avoids false-positives on user-defined types
+     * whose simple names collide with Akka internal names (e.g., a user-defined
+     * {@code Order.Source} sealed interface vs {@code akka.stream.scaladsl.Source}).
+     * This method is kept for string-only call-sites such as {@code $defs} / {@code $ref}
+     * post-processing where no class object is readily available.</p>
+     */
     private boolean isInternalSchemaName(String sanitizedName) {
         if (sanitizedName == null) return false;
-        // Akka Streams Source with any type params, e.g. Source_Object_NotUsed_
-        // Also match the raw class simple name "Source" to catch it before specialisation
-        if (sanitizedName.equals("Source") || sanitizedName.startsWith("Source_")) return true;
+        // Akka Streams Source with type params produces names like "Source_Object_NotUsed_".
+        // The underscore suffix distinguishes these from user-defined classes named "Source".
+        if (sanitizedName.startsWith("Source_")) return true;
+        // For the bare "Source" name we must be careful: user-defined sealed interfaces (e.g.
+        // Order.Source) are legitimate.  Only suppress when no user class with that name has
+        // been registered in classesPerSimpleName.
+        if (sanitizedName.equals("Source")) {
+            Set<Class<?>> classes = classesPerSimpleName.get("Source");
+            boolean hasUserClass = classes != null && classes.stream()
+                .anyMatch(c -> !isInternalClass(c));
+            return !hasUserClass;
+        }
         // Akka internal marker types
         if (sanitizedName.equals("NotUsed")) return true;
         if (sanitizedName.equals("Done")) return true;
@@ -2526,6 +2551,17 @@ public class SchemaGenerator {
         if (sanitizedName.startsWith("scala_")) return true;
         if (sanitizedName.startsWith("akka_")) return true;
         return false;
+    }
+
+    /**
+     * Returns true if the given class belongs to the Akka or Scala framework and should be
+     * suppressed from the generated OpenAPI spec.  This is the preferred check wherever the
+     * actual {@link Class} object is available.
+     */
+    private boolean isInternalClass(Class<?> clazz) {
+        if (clazz == null) return false;
+        String pkg = clazz.getPackageName();
+        return pkg.startsWith("akka.") || pkg.startsWith("scala.");
     }
 
     /**

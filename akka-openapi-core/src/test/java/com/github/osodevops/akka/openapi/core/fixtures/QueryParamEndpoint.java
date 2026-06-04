@@ -6,11 +6,13 @@ import akka.javasdk.annotations.http.HttpEndpoint;
 import com.github.osodevops.akka.openapi.annotations.OpenAPIQueryParam;
 import com.github.osodevops.akka.openapi.annotations.OpenAPISummary;
 
+import java.util.List;
+
 /**
  * Endpoint fixture demonstrating {@code @OpenAPIQueryParam} for dynamic query parameters.
  *
- * <p>Covers Integer, String, and Boolean parameter types so that the integration tests
- * can verify each type is correctly extracted and serialised into the OpenAPI spec.</p>
+ * <p>Covers Integer, String, Boolean, and List parameter types so that the integration
+ * tests can verify each type is correctly extracted and serialised into the OpenAPI spec.</p>
  */
 @HttpEndpoint("/reports")
 public class QueryParamEndpoint {
@@ -59,6 +61,25 @@ public class QueryParamEndpoint {
         defaultValue = "10"
     )
     public HttpResponse getPagedResults() {
+        return null;
+    }
+
+    @Get("/filtered")
+    @OpenAPISummary("List filtered results")
+    @OpenAPIQueryParam(
+        name = "filters",
+        description = "Active filters to apply (repeated: ?filters=a&filters=b)",
+        type = List.class,
+        itemType = String.class,
+        required = false
+    )
+    @OpenAPIQueryParam(
+        name = "statuses",
+        description = "Filter by status values",
+        type = List.class,
+        itemType = String.class
+    )
+    public HttpResponse getFilteredResults() {
         return null;
     }
 }

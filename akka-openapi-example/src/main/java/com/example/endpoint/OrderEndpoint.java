@@ -6,7 +6,9 @@ import akka.javasdk.annotations.http.HttpEndpoint;
 import akka.javasdk.annotations.http.Patch;
 import akka.javasdk.annotations.http.Post;
 import com.example.dto.*;
+import com.github.osodevops.akka.openapi.annotations.OpenAPIQueryParam;
 import com.github.osodevops.akka.openapi.annotations.OpenAPIResponse;
+import com.github.osodevops.akka.openapi.annotations.OpenAPISummary;
 import com.github.osodevops.akka.openapi.annotations.OpenAPITag;
 
 import java.util.List;
@@ -31,18 +33,26 @@ import java.util.List;
 public class OrderEndpoint {
 
     /**
-     * Lists all orders with pagination.
+     * Lists all orders with pagination and optional multi-status filtering.
      *
-     * <p>Returns a paginated list of all orders. Results can be filtered
-     * by status and sorted by creation date.</p>
+     * <p>Returns a paginated list of all orders. Results can be filtered by a single
+     * {@code status} typed parameter or by multiple statuses supplied as repeated
+     * {@code statuses} query values (e.g. {@code ?statuses=PENDING&statuses=CONFIRMED}).</p>
      *
      * @param page the page number (0-indexed)
      * @param size the page size (default: 20)
-     * @param status optional filter by order status
+     * @param status optional filter by a single order status
      * @return paginated order list
      */
     @Get
+    @OpenAPISummary("List orders")
     @OpenAPIResponse(status = "200", description = "Orders retrieved successfully")
+    @OpenAPIQueryParam(
+        name = "statuses",
+        description = "Filter by one or more order statuses (repeated: ?statuses=PENDING&statuses=CONFIRMED)",
+        type = List.class,
+        itemType = String.class
+    )
     public PagedResponse<Order> listOrders(Integer page, Integer size, OrderStatus status) {
         // Implementation would go here
         return new PagedResponse<>();

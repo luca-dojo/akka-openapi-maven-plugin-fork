@@ -1,24 +1,47 @@
 package com.example.dto;
 
-import com.fasterxml.jackson.annotation.JsonSubTypes;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import java.util.Optional;
 
 /**
- * Represents a notification that can be sent to a customer.
+ * Namespace class containing the concrete notification type implementations.
  *
- * <p>This is a polymorphic type using Jackson annotations to support
- * multiple notification channels (email, SMS, push).</p>
+ * <p>Each inner record implements {@link NotificationType}, enabling polymorphic
+ * serialisation via the {@code type} discriminator property.</p>
  */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "channel")
-@JsonSubTypes({
-    @JsonSubTypes.Type(value = EmailNotification.class, name = "EMAIL"),
-    @JsonSubTypes.Type(value = SmsNotification.class, name = "SMS"),
-    @JsonSubTypes.Type(value = PushNotification.class, name = "PUSH")
-})
-public sealed interface Notification
-    permits EmailNotification, SmsNotification, PushNotification {
+public final class Notification {
 
-    String recipientId();
+    private Notification() {}
 
-    String message();
+    /**
+     * An email notification sent to a customer.
+     */
+    public record EmailNotification(
+        String recipientId,
+        String message,
+        String subject,
+        String fromAddress,
+        Optional<Title> title,
+        Optional<DeviceToken> deviceToken
+    ) implements NotificationType {}
+
+    /**
+     * An SMS notification sent to a customer.
+     */
+    public record SmsNotification(
+        String recipientId,
+        String message,
+        String phoneNumber,
+        Optional<Title> title,
+        Optional<DeviceToken> deviceToken
+    ) implements NotificationType {}
+
+    /**
+     * A push notification sent to a customer's device.
+     */
+    public record PushNotification(
+        String recipientId,
+        String message,
+        Optional<Title> title,
+        Optional<DeviceToken> deviceToken
+    ) implements NotificationType {}
 }

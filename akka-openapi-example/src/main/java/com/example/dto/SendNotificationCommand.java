@@ -1,3 +1,3 @@
 package com.example.dto;
 
-public record SendNotificationCommand(Notification notification) {}
+public record SendNotificationCommand(NotificationType notification) {}

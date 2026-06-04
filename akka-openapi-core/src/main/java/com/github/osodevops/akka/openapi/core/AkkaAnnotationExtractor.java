@@ -483,19 +483,47 @@ public class AkkaAnnotationExtractor {
                 effectiveType = ann.type();
             }
 
-            // Parse defaultValue against the resolved type
+            // Promote to a parameterized collection type when itemType is provided
+            Class<?> itemTypeClass = ann.itemType();
+            if (itemTypeClass != Void.class) {
+                if (effectiveType instanceof Class<?> rawClass && Collection.class.isAssignableFrom(rawClass)) {
+                    effectiveType = new SimpleParameterizedType((Class<?>) effectiveType, itemTypeClass);
+                    logger.accept("Resolved @OpenAPIQueryParam(name=\"" + paramName + "\") as List<"
+                        + itemTypeClass.getSimpleName() + "> on " + method.getName());
+                } else {
+                    logger.accept("Warning: itemType is specified but type is not a Collection for param \""
+                        + paramName + "\" on " + method.getName() + "; itemType is ignored");
+                }
+            } else if (effectiveType instanceof Class<?> rawClass && Collection.class.isAssignableFrom(rawClass)) {
+                logger.accept("Warning: type=List.class (or Collection) specified without itemType for param \""
+                    + paramName + "\" on " + method.getName() + "; item type defaults to object");
+            }
+
+            boolean isCollection = isCollectionType(effectiveType);
+
+            // Parse defaultValue against the resolved type (not supported for collection params)
             Object defaultValue = null;
             if (!ann.defaultValue().isEmpty()) {
-                defaultValue = parseAnnotationValue(ann.defaultValue(), effectiveType, method.getName(), paramName);
-            } else if (existing != null && existing.getDefaultValue() != null) {
+                if (isCollection) {
+                    logger.accept("Warning: 'defaultValue' is not supported for List/Collection parameters; param=\""
+                        + paramName + "\" on " + method.getName() + "; ignoring");
+                } else {
+                    defaultValue = parseAnnotationValue(ann.defaultValue(), effectiveType, method.getName(), paramName);
+                }
+            } else if (existing != null && existing.getDefaultValue() != null && !isCollection) {
                 defaultValue = existing.getDefaultValue();
             }
 
-            // Resolve format: annotation wins over inferred
+            // Resolve format: annotation wins over inferred (not supported for collection params)
             String format = null;
             if (!ann.format().isEmpty()) {
-                format = ann.format();
-            } else if (existing != null && existing.getFormat() != null) {
+                if (isCollection) {
+                    logger.accept("Warning: 'format' is not supported for List/Collection parameters; param=\""
+                        + paramName + "\" on " + method.getName() + "; ignoring");
+                } else {
+                    format = ann.format();
+                }
+            } else if (existing != null && existing.getFormat() != null && !isCollection) {
                 format = existing.getFormat();
             }
 
@@ -503,8 +531,18 @@ public class AkkaAnnotationExtractor {
             String description = !ann.description().isEmpty() ? ann.description()
                 : (existing != null ? existing.getDescription() : "");
 
-            BigDecimal minimum = parseBigDecimal(ann.minimum(), "minimum", paramName, method.getName());
-            BigDecimal maximum = parseBigDecimal(ann.maximum(), "maximum", paramName, method.getName());
+            // minimum/maximum are not applicable to collection parameters
+            BigDecimal minimum = null;
+            BigDecimal maximum = null;
+            if (isCollection) {
+                if (!ann.minimum().isEmpty() || !ann.maximum().isEmpty()) {
+                    logger.accept("Warning: 'minimum'/'maximum' are not supported for List/Collection parameters; param=\""
+                        + paramName + "\" on " + method.getName() + "; ignoring");
+                }
+            } else {
+                minimum = parseBigDecimal(ann.minimum(), "minimum", paramName, method.getName());
+                maximum = parseBigDecimal(ann.maximum(), "maximum", paramName, method.getName());
+            }
 
             ParameterMetadata.Builder builder = ParameterMetadata.builder()
                 .name(paramName)
@@ -699,5 +737,82 @@ public class AkkaAnnotationExtractor {
             // Ignore and return default
         }
         return defaultValue;
+    }
+
+    /**
+     * Returns {@code true} if the given type is a {@link Collection} or a parameterized
+     * type whose raw type is a {@link Collection}.
+     */
+    private static boolean isCollectionType(Type type) {
+        if (type instanceof Class<?> clazz) {
+            return Collection.class.isAssignableFrom(clazz);
+        }
+        if (type instanceof ParameterizedType pt && pt.getRawType() instanceof Class<?> raw) {
+            return Collection.class.isAssignableFrom(raw);
+        }
+        return false;
+    }
+
+    /**
+     * A minimal, structurally equal implementation of {@link ParameterizedType} used to
+     * represent parameterized collection types (e.g. {@code List<String>}) constructed from
+     * annotation metadata at extraction time.
+     *
+     * <p>Equality and hashing are based on the raw type and all type arguments so that
+     * instances behave correctly when stored in collections or compared in tests.</p>
+     */
+    private static final class SimpleParameterizedType implements ParameterizedType {
+
+        private final Class<?> rawType;
+        private final Type[] typeArguments;
+
+        SimpleParameterizedType(Class<?> rawType, Class<?>... typeArguments) {
+            this.rawType = rawType;
+            this.typeArguments = typeArguments.clone();
+        }
+
+        @Override
+        public Type[] getActualTypeArguments() {
+            return typeArguments.clone();
+        }
+
+        @Override
+        public Type getRawType() {
+            return rawType;
+        }
+
+        @Override
+        public Type getOwnerType() {
+            return null;
+        }
+
+        @Override
+        public String getTypeName() {
+            StringBuilder sb = new StringBuilder(rawType.getName()).append('<');
+            for (int i = 0; i < typeArguments.length; i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(typeArguments[i].getTypeName());
+            }
+            return sb.append('>').toString();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof ParameterizedType that)) return false;
+            return Objects.equals(rawType, that.getRawType())
+                && that.getOwnerType() == null
+                && Arrays.equals(typeArguments, that.getActualTypeArguments());
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(typeArguments) ^ rawType.hashCode();
+        }
+
+        @Override
+        public String toString() {
+            return getTypeName();
+        }
     }
 }

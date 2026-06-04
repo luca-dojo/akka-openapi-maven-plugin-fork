@@ -451,7 +451,45 @@ parameters:
       default: false
 ```
 
-All three types may be combined on a single method by repeating the annotation:
+#### List parameter
+
+Use `type = List.class` together with `itemType` to document a query parameter that can
+be repeated — e.g. `?filters=active&filters=pending`.
+
+```java
+@Get("/orders")
+@OpenAPISummary("List orders")
+@OpenAPIQueryParam(
+    name = "filters",
+    description = "Active filters to apply (repeated: ?filters=a&filters=b)",
+    type = List.class,
+    itemType = String.class
+)
+public List<Order> listOrders() {
+    List<String> filters = requestContext().queryParams().getAll("filters");
+    // ...
+}
+```
+
+Generates:
+
+```yaml
+parameters:
+  - name: filters
+    in: query
+    required: false
+    description: "Active filters to apply (repeated: ?filters=a&filters=b)"
+    schema:
+      type: array
+      items:
+        type: string
+```
+
+> **Note:** `minimum`, `maximum`, `format`, and `defaultValue` are not supported for
+> list parameters and will be ignored with a warning.  Only the element type specified
+> via `itemType` is used to describe the array items.
+
+All types may be combined on a single method by repeating the annotation:
 
 ```java
 @Get("/products")
@@ -468,6 +506,12 @@ All three types may be combined on a single method by repeating the annotation:
     name = "includeDiscontinued",
     description = "When true, discontinued products are included in the response",
     type = Boolean.class, defaultValue = "false"
+)
+@OpenAPIQueryParam(
+    name = "tags",
+    description = "Filter by tags",
+    type = List.class,
+    itemType = String.class
 )
 public List<Product> listProducts() { ... }
 ```
@@ -486,11 +530,12 @@ public PagedResponse<Customer> listCustomers(Integer page, Integer size) { ... }
 | `name` | `parameters[].name` | Required |
 | `description` | `parameters[].description` | |
 | `required` | `parameters[].required` | Default `false` |
-| `type` | `schema.type` | `Void.class` (default) resolves to `String` |
-| `format` | `schema.format` | e.g. `"int32"`, `"int64"`, `"date-time"` |
-| `minimum` | `schema.minimum` | Parsed as `BigDecimal` |
-| `maximum` | `schema.maximum` | Parsed as `BigDecimal` |
-| `defaultValue` | `schema.default` | Parsed to the resolved Java type |
+| `type` | `schema.type` | `Void.class` (default) resolves to `String`; use `List.class` for arrays |
+| `itemType` | `schema.items.type` | Element type for `List`/`Collection` parameters; ignored for scalar types |
+| `format` | `schema.format` | e.g. `"int32"`, `"int64"`, `"date-time"`; not supported for list params |
+| `minimum` | `schema.minimum` | Parsed as `BigDecimal`; not supported for list params |
+| `maximum` | `schema.maximum` | Parsed as `BigDecimal`; not supported for list params |
+| `defaultValue` | `schema.default` | Parsed to the resolved Java type; not supported for list params |
 
 ### Low-Level HttpResponse Return Types
 

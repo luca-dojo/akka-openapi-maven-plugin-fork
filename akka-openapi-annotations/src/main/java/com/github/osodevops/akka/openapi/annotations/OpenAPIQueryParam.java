@@ -55,9 +55,38 @@ public @interface OpenAPIQueryParam {
      * parameter with the same name, or to default to {@code String.class} when no inferred
      * parameter exists.</p>
      *
+     * <p>To declare a list/array query parameter (e.g. repeated query values such as
+     * {@code ?filters=a&filters=b}), set {@code type = List.class} and pair it with
+     * {@link #itemType()} to specify the element type:</p>
+     *
+     * <pre>{@code
+     * @OpenAPIQueryParam(name = "filters", type = List.class, itemType = String.class)
+     * }</pre>
+     *
      * @return the parameter type class
      */
     Class<?> type() default Void.class;
+
+    /**
+     * The element type when {@link #type()} is {@code List.class} (or another
+     * {@link java.util.Collection} subclass).
+     *
+     * <p>Use {@code Void.class} (the default) when the parameter is a scalar type.
+     * When {@code type = List.class} is set, pair it with this attribute to specify
+     * the list element type.  For example:</p>
+     *
+     * <pre>{@code
+     * // Generates: type: array, items: { type: string }
+     * @OpenAPIQueryParam(name = "filters", type = List.class, itemType = String.class,
+     *                    description = "Active filters to apply")
+     * }</pre>
+     *
+     * <p>Note: {@code minimum}, {@code maximum}, {@code format}, and {@code defaultValue}
+     * are not supported for list parameters and will be ignored with a warning.</p>
+     *
+     * @return the element type for list parameters, or {@code Void.class} for scalar parameters
+     */
+    Class<?> itemType() default Void.class;
 
     /**
      * An optional OpenAPI format hint for the schema (e.g. {@code "int32"}, {@code "int64"},

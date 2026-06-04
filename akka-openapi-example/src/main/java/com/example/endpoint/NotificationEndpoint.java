@@ -4,9 +4,10 @@ import akka.javasdk.annotations.http.Get;
 import akka.javasdk.annotations.http.HttpEndpoint;
 import akka.javasdk.annotations.http.Post;
 import com.example.dto.DeliveryMethod;
-import com.example.dto.Notification;
+import com.example.dto.Message;
 import com.example.dto.NotificationGroup;
 import com.example.dto.NotificationGroupsResponse;
+import com.example.dto.NotificationType;
 import com.example.dto.ScheduleDeliveryCommand;
 import com.example.dto.SendNotificationCommand;
 import com.github.osodevops.akka.openapi.annotations.OpenAPIResponse;
@@ -29,7 +30,7 @@ public class NotificationEndpoint {
     /**
      * Sends a notification to a customer.
      *
-     * <p>The notification type is determined by the {@code channel} discriminator
+     * <p>The notification type is determined by the {@code type} discriminator
      * property which can be EMAIL, SMS, or PUSH.</p>
      *
      * @param command the notification command to send
@@ -39,7 +40,7 @@ public class NotificationEndpoint {
     @OpenAPISummary("Send a notification")
     @OpenAPIResponse(status = "201", description = "Notification sent successfully")
     @OpenAPIResponse(status = "400", description = "Invalid notification data")
-    public Notification sendNotification(SendNotificationCommand command) {
+    public NotificationType sendNotification(SendNotificationCommand command) {
         // Implementation would go here
         return command.notification();
     }
@@ -52,8 +53,8 @@ public class NotificationEndpoint {
      */
     @Get("/{recipientId}/latest")
     @OpenAPISummary("Get latest notification for recipient")
-    @OpenAPIResponseSchema(Notification.class)
-    public Notification getLatestNotification(String recipientId) {
+    @OpenAPIResponseSchema(NotificationType.class)
+    public NotificationType getLatestNotification(String recipientId) {
         // Implementation would go here
         return null;
     }
@@ -67,7 +68,7 @@ public class NotificationEndpoint {
     @Get("/{recipientId}")
     @OpenAPISummary("List notifications for recipient")
     @OpenAPIResponse(status = "200", description = "Notifications retrieved successfully")
-    public List<Notification> listNotifications(String recipientId) {
+    public List<NotificationType> listNotifications(String recipientId) {
         // Implementation would go here
         return List.of();
     }
@@ -122,5 +123,24 @@ public class NotificationEndpoint {
     @OpenAPIResponseSchema(DeliveryMethod.class)
     public DeliveryMethod getDelivery(String orderId) {
         return null;
+    }
+
+    /**
+     * Sends a message containing a typed notification.
+     *
+     * <p>Demonstrates the {@link Message}/{@link NotificationType} pattern where
+     * polymorphic subtypes are inner records of the {@link com.example.dto.Notification}
+     * namespace class, discriminated by the {@code type} property.</p>
+     *
+     * @param message the message to send
+     * @return the accepted message
+     */
+    @Post("/messages")
+    @OpenAPISummary("Send a message")
+    @OpenAPIResponse(status = "201", description = "Message sent successfully")
+    @OpenAPIResponse(status = "400", description = "Invalid message data")
+    public Message sendMessage(Message message) {
+        // Implementation would go here
+        return message;
     }
 }
