@@ -140,6 +140,14 @@ public class OpenAPIModelBuilder {
             components.setSchemas(new TreeMap<>(schemas));
         }
 
+        // Path-level $refs were built from internal (enclosing-chain qualified) type names.
+        // Normalise the whole document to the final, collapsed component names so every
+        // reference resolves (e.g. nested response DTOs referenced directly from a path).
+        Map<String, String> nameReplacements = schemaGenerator.getSchemaNameReplacements();
+        if (!nameReplacements.isEmpty()) {
+            rewriteAllRefs(openAPI, nameReplacements);
+        }
+
         // Build security schemes from configuration
         List<SecuritySchemeConfig> securitySchemeConfigs = config.getSecuritySchemes();
         if (config.isIncludeSecuritySchemes()
@@ -712,5 +720,107 @@ public class OpenAPIModelBuilder {
     public void reset() {
         schemaGenerator.clearSchemas();
         usedOperationIds.clear();
+    }
+
+    /**
+     * Rewrites every {@code $ref} in the document (paths and components) using the given
+     * internal-name → final-name replacement map, so references built from internal type
+     * names resolve to the collapsed component schema names.
+     */
+    private void rewriteAllRefs(OpenAPI openAPI, Map<String, String> replacements) {
+        if (openAPI.getComponents() != null && openAPI.getComponents().getSchemas() != null) {
+            openAPI.getComponents().getSchemas().values()
+                .forEach(schema -> rewriteSchemaRefs(schema, replacements));
+        }
+        if (openAPI.getPaths() == null) {
+            return;
+        }
+        for (PathItem pathItem : openAPI.getPaths().values()) {
+            if (pathItem == null) {
+                continue;
+            }
+            pathItem.readOperations().forEach(op -> rewriteOperationRefs(op, replacements));
+        }
+    }
+
+    private void rewriteOperationRefs(Operation operation, Map<String, String> replacements) {
+        if (operation == null) {
+            return;
+        }
+        if (operation.getParameters() != null) {
+            for (Parameter parameter : operation.getParameters()) {
+                if (parameter != null) {
+                    rewriteSchemaRefs(parameter.getSchema(), replacements);
+                    rewriteContentRefs(parameter.getContent(), replacements);
+                }
+            }
+        }
+        if (operation.getRequestBody() != null) {
+            rewriteContentRefs(operation.getRequestBody().getContent(), replacements);
+        }
+        if (operation.getResponses() != null) {
+            for (ApiResponse response : operation.getResponses().values()) {
+                if (response != null) {
+                    rewriteContentRefs(response.getContent(), replacements);
+                }
+            }
+        }
+    }
+
+    private void rewriteContentRefs(Content content, Map<String, String> replacements) {
+        if (content == null) {
+            return;
+        }
+        for (MediaType mediaType : content.values()) {
+            if (mediaType != null) {
+                rewriteSchemaRefs(mediaType.getSchema(), replacements);
+            }
+        }
+    }
+
+    private void rewriteSchemaRefs(Schema<?> schema, Map<String, String> replacements) {
+        if (schema == null) {
+            return;
+        }
+        String prefix = "#/components/schemas/";
+        if (schema.get$ref() != null && schema.get$ref().startsWith(prefix)) {
+            String name = schema.get$ref().substring(prefix.length());
+            String replacement = replacements.get(name);
+            if (replacement != null) {
+                schema.set$ref(prefix + replacement);
+            }
+        }
+        if (schema.getProperties() != null) {
+            schema.getProperties().values()
+                .forEach(p -> rewriteSchemaRefs((Schema<?>) p, replacements));
+        }
+        Object addProps = schema.getAdditionalProperties();
+        if (addProps instanceof Schema) {
+            rewriteSchemaRefs((Schema<?>) addProps, replacements);
+        }
+        if (schema.getItems() != null) {
+            rewriteSchemaRefs(schema.getItems(), replacements);
+        }
+        if (schema.getOneOf() != null) {
+            schema.getOneOf().forEach(s -> rewriteSchemaRefs(s, replacements));
+        }
+        if (schema.getAnyOf() != null) {
+            schema.getAnyOf().forEach(s -> rewriteSchemaRefs(s, replacements));
+        }
+        if (schema.getAllOf() != null) {
+            schema.getAllOf().forEach(s -> rewriteSchemaRefs(s, replacements));
+        }
+        if (schema.getDiscriminator() != null && schema.getDiscriminator().getMapping() != null) {
+            Map<String, String> mapping = schema.getDiscriminator().getMapping();
+            for (Map.Entry<String, String> entry : mapping.entrySet()) {
+                String val = entry.getValue();
+                if (val != null && val.startsWith(prefix)) {
+                    String replacement = replacements.get(val.substring(prefix.length()));
+                    if (replacement != null) {
+                        entry.setValue(prefix + replacement);
+                    }
+                }
+            }
+        }
     }
 }

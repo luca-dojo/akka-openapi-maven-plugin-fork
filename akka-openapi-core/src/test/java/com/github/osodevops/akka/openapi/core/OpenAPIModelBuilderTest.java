@@ -5,6 +5,7 @@ import com.github.osodevops.akka.openapi.core.config.SecuritySchemeConfig;
 import com.github.osodevops.akka.openapi.core.config.ServerConfig;
 import com.github.osodevops.akka.openapi.core.fixtures.CustomerDto;
 import com.github.osodevops.akka.openapi.core.fixtures.CreateCustomerRequest;
+import com.github.osodevops.akka.openapi.core.fixtures.FooEndpoint;
 import com.github.osodevops.akka.openapi.core.model.*;
 import com.github.osodevops.akka.openapi.core.model.InfoMetadata;
 import com.github.osodevops.akka.openapi.core.model.ServerMetadata;
@@ -148,6 +149,49 @@ class OpenAPIModelBuilderTest {
         PathItem pathItem = openAPI.getPaths().get("/customers/{id}");
         assertThat(pathItem.getGet()).isNotNull();
         assertThat(pathItem.getGet().getOperationId()).isEqualTo("getCustomer");
+    }
+
+    @Test
+    void shouldNormalisePathRefForNestedResponseTypeToFinalComponentName() {
+        // A response type nested inside an endpoint class has an internal (qualified) name
+        // (FooEndpointFoo) that collapses to its simple name (Foo). Once the type is already
+        // generated, a subsequent response emits a $ref to the internal name; that path-level
+        // $ref must be rewritten to the final component name so it resolves.
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("FooEndpoint")
+            .basePath("/foo")
+            .addOperation(OperationMetadata.builder()
+                .methodName("getFooFirst")
+                .httpMethod(HttpMethod.GET)
+                .path("/first")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .responseType(FooEndpoint.Foo.class)
+                    .build())
+                .build())
+            .addOperation(OperationMetadata.builder()
+                .methodName("getFooSecond")
+                .httpMethod(HttpMethod.GET)
+                .path("/second")
+                .addResponse(ResponseMetadata.builder()
+                    .statusCode("200")
+                    .description("Success")
+                    .responseType(FooEndpoint.Foo.class)
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        String ref = openAPI.getPaths().get("/foo/second").getGet()
+            .getResponses().get("200")
+            .getContent().get("application/json").getSchema().get$ref();
+
+        assertThat(ref).isEqualTo("#/components/schemas/Foo");
+        // The referenced component must exist (no dangling reference).
+        assertThat(openAPI.getComponents().getSchemas()).containsKey("Foo");
+        assertThat(openAPI.getComponents().getSchemas()).doesNotContainKey("FooEndpointFoo");
     }
 
     @Test

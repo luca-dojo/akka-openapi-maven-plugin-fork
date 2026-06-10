@@ -796,6 +796,52 @@ class SchemaGeneratorTest {
     }
 
     @Test
+    void shouldKeepNestedSameNameRecordsDistinctAcrossSeparateEndpoints() {
+        // Two separate endpoint response types, each nesting a record named "Baz" with a
+        // different shape, generated through the SAME generator (mirrors scanning two
+        // endpoint files). The nested Baz refs must stay distinct and resolvable.
+        generator.generateSchema(FooEndpoint.Foo.class);
+        generator.generateSchema(BarEndpoint.Bar.class);
+
+        assertNestedBazRefsAreDistinctAndPresent(generator.getGeneratedSchemas());
+    }
+
+    @Test
+    void shouldKeepNestedSameNameRecordsDistinctRegardlessOfGenerationOrder() {
+        // Reverse generation order — result must be identical (order-independent).
+        generator.generateSchema(BarEndpoint.Bar.class);
+        generator.generateSchema(FooEndpoint.Foo.class);
+
+        assertNestedBazRefsAreDistinctAndPresent(generator.getGeneratedSchemas());
+    }
+
+    private void assertNestedBazRefsAreDistinctAndPresent(Map<String, Schema<?>> schemas) {
+        // Top-level types collapse to their simple names (globally unique).
+        Schema<?> foo = schemas.get("Foo");
+        Schema<?> bar = schemas.get("Bar");
+        assertThat(foo).isNotNull();
+        assertThat(bar).isNotNull();
+
+        // The shared nested name "Baz" stays qualified for both owners.
+        String fooBazRef = foo.getProperties().get("baz").get$ref();
+        String barBazRef = bar.getProperties().get("baz").get$ref();
+        assertThat(fooBazRef).isEqualTo("#/components/schemas/FooEndpointBaz");
+        assertThat(barBazRef).isEqualTo("#/components/schemas/BarEndpointBaz");
+        assertThat(fooBazRef).isNotEqualTo(barBazRef);
+
+        // Both referenced schemas exist (no dangling refs) and carry their own shape.
+        Schema<?> fooBaz = schemas.get("FooEndpointBaz");
+        Schema<?> barBaz = schemas.get("BarEndpointBaz");
+        assertThat(fooBaz).isNotNull();
+        assertThat(barBaz).isNotNull();
+        assertThat(fooBaz.getProperties().get("value").getType()).isEqualTo("string");
+        assertThat(barBaz.getProperties().get("value").getType()).isEqualTo("integer");
+
+        // The ambiguous simple name must not leak into the component map.
+        assertThat(schemas).doesNotContainKey("Baz");
+    }
+
+    @Test
     void shouldStoreCorrectPropertiesForQualifiedInnerRecordSchemas() {
         generator.generateSchema(ReportsResponse.class);
 

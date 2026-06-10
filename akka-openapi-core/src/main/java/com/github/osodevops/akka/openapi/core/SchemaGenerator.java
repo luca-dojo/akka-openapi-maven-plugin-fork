@@ -53,10 +53,14 @@ public class SchemaGenerator {
     private final Set<String> processingTypes;
     /** Registry mapping simple class name → Class<?> for enrichRequiredFields post-processing on defs. */
     private final Map<String, Class<?>> classRegistry;
-    /** Tracks all classes that map to a given simple name, for collision detection. */
-    private final Map<String, Set<Class<?>>> classesPerSimpleName;
-    /** Canonical schema name resolved for each class (handles collisions via qualification). */
+    /** Canonical internal schema name resolved for each class (enclosing-chain qualified). */
     private final Map<Class<?>, String> resolvedSchemaNames;
+    /**
+     * Cumulative internal-name → final-display-name replacements applied by the last
+     * {@link #getGeneratedSchemas()} call. Lets callers normalise {@code $ref}s they built
+     * from internal names (e.g. path-level response refs) to the collapsed component names.
+     */
+    private final Map<String, String> lastSchemaNameReplacements;
 
     /**
      * Creates a new SchemaGenerator with default settings.
@@ -78,8 +82,8 @@ public class SchemaGenerator {
         this.subtypeToParentMap = new ConcurrentHashMap<>();
         this.processingTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
         this.classRegistry = new ConcurrentHashMap<>();
-        this.classesPerSimpleName = new ConcurrentHashMap<>();
         this.resolvedSchemaNames = new ConcurrentHashMap<>();
+        this.lastSchemaNameReplacements = new ConcurrentHashMap<>();
         this.jsonSchemaGenerator = createJsonSchemaGenerator();
     }
 
@@ -107,9 +111,7 @@ public class SchemaGenerator {
             return;
         }
         visited.add(clazz);
-        classRegistry.putIfAbsent(clazz.getSimpleName(), clazz);
-        // Track all classes per simple name for collision detection
-        classesPerSimpleName.computeIfAbsent(clazz.getSimpleName(), k -> ConcurrentHashMap.newKeySet()).add(clazz);
+        classRegistry.putIfAbsent(internalNameForClass(clazz), clazz);
 
         // For enums, register but don't recurse into fields/nested classes
         if (clazz.isEnum()) {
@@ -169,6 +171,52 @@ public class SchemaGenerator {
         }
     }
 
+    /**
+     * Computes the canonical internal schema name for a class: the simple names of its
+     * enclosing-class chain concatenated with its own simple name (e.g. {@code FooEndpoint.Baz}
+     * -&gt; {@code FooEndpointBaz}, top-level {@code Address} -&gt; {@code Address}).
+     *
+     * <p>Pure and deterministic — identical to the name emitted by the victools definition
+     * naming strategy, so every {@code $ref} we build matches the corresponding {@code $def}.
+     * Disambiguation back to minimal display names happens once, in {@link #getGeneratedSchemas}.</p>
+     */
+    private String internalNameForClass(Class<?> clazz) {
+        java.util.Deque<String> chain = new java.util.ArrayDeque<>();
+        for (Class<?> cur = clazz; cur != null; cur = cur.getEnclosingClass()) {
+            chain.addFirst(cur.getSimpleName());
+        }
+        return sanitizeSchemaName(String.join("", chain));
+    }
+
+    /**
+     * Computes the internal name for a resolved (possibly generic) type, mirroring the
+     * specialized/Map naming used elsewhere so def keys and our own refs stay in sync.
+     */
+    private String internalNameForResolvedType(com.fasterxml.classmate.ResolvedType type) {
+        Class<?> erased = type.getErasedType();
+        List<com.fasterxml.classmate.ResolvedType> params = type.getTypeParameters();
+        if (Map.class.isAssignableFrom(erased) && params.size() == 2) {
+            return "Map_" + internalNamePart(params.get(0))
+                + "_" + internalNamePart(params.get(1)) + "_";
+        }
+        if (!params.isEmpty() && !Collection.class.isAssignableFrom(erased)) {
+            StringBuilder name = new StringBuilder(internalNameForClass(erased));
+            for (com.fasterxml.classmate.ResolvedType param : params) {
+                name.append(internalNamePart(param));
+            }
+            return name.toString();
+        }
+        return internalNameForClass(erased);
+    }
+
+    private String internalNamePart(com.fasterxml.classmate.ResolvedType type) {
+        Class<?> erased = type.getErasedType();
+        if (erased.isPrimitive() || trySimpleTypeSchema(erased) != null) {
+            return sanitizeSchemaName(erased.getSimpleName());
+        }
+        return internalNameForResolvedType(type);
+    }
+
     private com.github.victools.jsonschema.generator.SchemaGenerator createJsonSchemaGenerator() {
         SchemaGeneratorConfigBuilder configBuilder = new SchemaGeneratorConfigBuilder(
             SchemaVersion.DRAFT_2020_12,
@@ -192,6 +240,20 @@ public class SchemaGenerator {
         // Configure options
         configBuilder.with(Option.DEFINITIONS_FOR_ALL_OBJECTS);
         configBuilder.with(Option.SCHEMA_VERSION_INDICATOR);
+
+        // Emit globally-unambiguous $def names (enclosing-chain qualified) so that no two
+        // distinct classes ever share a def key — within or across generation calls. This
+        // removes any need for content-based collision disambiguation downstream. Names are
+        // collapsed back to minimal display names in getGeneratedSchemas().
+        configBuilder.forTypesInGeneral()
+            .withDefinitionNamingStrategy(new com.github.victools.jsonschema.generator.naming.SchemaDefinitionNamingStrategy() {
+                @Override
+                public String getDefinitionNameForKey(
+                        com.github.victools.jsonschema.generator.impl.DefinitionKey key,
+                        SchemaGenerationContext context) {
+                    return internalNameForResolvedType(key.getType());
+                }
+            });
 
         // Unwrap Optional<T> fields and method return types to their inner type T.
         // Without this, victools treats Optional as an opaque object.
@@ -1517,10 +1579,11 @@ public class SchemaGenerator {
         Set<String> rootAliases = new HashSet<>();
         JsonNode rootSchema = resolveRootSchemaNode(jsonSchema, defs, rootAliases);
         rootAliases.forEach(alias -> schemaNameAliases.put(alias, rootTypeName));
-        registerExistingSchemaAliases(defs);
 
         if (defs != null && defs.isObject()) {
-            // First pass: process non-Map, non-nullable defs
+            // First pass: process non-Map, non-nullable defs. Def names are canonical,
+            // globally-unambiguous internal names, so each is stored directly under its
+            // own name — no collision disambiguation required.
             defs.fields().forEachRemaining(entry -> {
                 String defName = sanitizeSchemaName(entry.getKey());
                 if (defName.endsWith("-nullable") || defName.startsWith("Map_")) {
@@ -1530,83 +1593,31 @@ public class SchemaGenerator {
                 if (isInternalSchemaName(defName)) {
                     return;
                 }
-
-                // Check for name collision: if multiple classes share this simple name,
-                // resolve to a qualified name for the class belonging to the current root type
-                String resolvedName = resolveDefNameForRoot(defName, rootTypeName, defs);
-                if (resolvedName != null && !resolvedName.equals(defName)) {
-                    // This def has a collision — store under the qualified name.
-                    // Do NOT set a global alias for defName, since it maps to different
-                    // qualified names depending on context (handled by extractRefName).
-                    if (!generatedSchemas.containsKey(resolvedName)) {
-                        Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), resolvedName);
-                        if (defSchema != null && defSchema.get$ref() == null) {
-                            generatedSchemas.put(resolvedName, defSchema);
-                        }
-                    }
+                if (rootAliases.contains(defName) || generatedSchemas.containsKey(defName)) {
                     return;
                 }
-
-                // Check if this is a duplicate numbered variant (e.g. EmailConfig-2 when EmailConfig-1 is already registered)
-                String existingForDef = findExistingSchemaName(defName);
-                if (existingForDef != null && !existingForDef.equals(defName)) {
-                    // Before aliasing, check if the existing schema is from a different class (collision)
-                    if (isSchemaNameCollision(defName, entry.getValue())) {
-                        String qualifiedName = qualifyDefNameForRoot(defName, rootTypeName);
-                        if (qualifiedName != null) {
-                            // Don't set global alias — context-aware extractRefName handles it
-                            if (!generatedSchemas.containsKey(qualifiedName)) {
-                                Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), qualifiedName);
-                                if (defSchema != null) {
-                                    generatedSchemas.put(qualifiedName, defSchema);
-                                }
-                            }
-                            return;
-                        }
-                    }
-                    schemaNameAliases.put(defName, existingForDef);
-                    return; // skip – already have an equivalent schema
+                Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), defName);
+                if (defSchema == null) {
+                    return;
                 }
-                // If this is a new numbered schema (e.g. EmailConfig-1) and no base exists yet,
-                // register it under the base name (e.g. EmailConfig) to avoid the suffix.
-                String registrationName = defName;
-                String baseName = stripNumericSuffix(defName);
-                if (baseName != null && !generatedSchemas.containsKey(baseName)
-                        && !schemaNameAliases.containsKey(baseName)
-                        && !rootAliases.contains(baseName)
-                        && !schemaNameAliases.containsKey(defName)
-                        && !generatedSchemas.containsKey(defName)) {
-                    registrationName = baseName;
-                    schemaNameAliases.put(defName, baseName);
-                }
-                if (!rootAliases.contains(defName)
-                        && !generatedSchemas.containsKey(registrationName)) {
-                    // Only process if not already aliased to something else
-                    String existingAlias = schemaNameAliases.get(defName);
-                    if (existingAlias != null && !existingAlias.equals(registrationName)) {
+                // A def that is purely a $ref to another schema is an alias — record it
+                // instead of materialising a redundant component.
+                if (defSchema.get$ref() != null) {
+                    String aliasTarget = extractRefName(defSchema.get$ref(), defName);
+                    if (aliasTarget != null && !aliasTarget.equals(defName)
+                            && !defSchema.get$ref().equals("#/components/schemas/" + defName)) {
+                        schemaNameAliases.put(defName, aliasTarget);
                         return;
                     }
-                    Schema<?> defSchema = convertJsonNodeToSchema(entry.getValue(), registrationName);
-                    if (defSchema == null) {
-                        return;
-                    }
-                    // TODO: REMOVE IF NEEDED
-                    if (defSchema.get$ref() != null) {
-                        String aliasTarget = extractRefName(defSchema.get$ref(), defName);
-                        if (aliasTarget != null && !aliasTarget.equals(defName)) {
-                            schemaNameAliases.put(defName, aliasTarget);
-                            return;
-                        }
-                    }
-                    // Avoid storing self-referencing schemas (e.g., from "#" circular refs)
-                    if (defSchema.get$ref() != null &&
-                        defSchema.get$ref().equals("#/components/schemas/" + registrationName)) {
-                        ObjectSchema objectSchema = new ObjectSchema();
-                        objectSchema.setAdditionalProperties(new ObjectSchema());
-                        generatedSchemas.put(registrationName, objectSchema);
-                    } else {
-                        generatedSchemas.put(registrationName, defSchema);
-                    }
+                }
+                // Avoid storing self-referencing schemas (e.g., from "#" circular refs)
+                if (defSchema.get$ref() != null &&
+                    defSchema.get$ref().equals("#/components/schemas/" + defName)) {
+                    ObjectSchema objectSchema = new ObjectSchema();
+                    objectSchema.setAdditionalProperties(new ObjectSchema());
+                    generatedSchemas.put(defName, objectSchema);
+                } else {
+                    generatedSchemas.put(defName, defSchema);
                 }
             });
 
@@ -1667,51 +1678,6 @@ public class SchemaGenerator {
         return defs != null ? defs : jsonSchema.get("definitions");
     }
 
-    private void registerExistingSchemaAliases(JsonNode defs) {
-        if (defs == null || !defs.isObject()) {
-            return;
-        }
-
-        Iterator<Map.Entry<String, JsonNode>> fields = defs.fields();
-        while (fields.hasNext()) {
-            String defName = sanitizeSchemaName(fields.next().getKey());
-            String existingSchemaName = findExistingSchemaName(defName);
-            if (existingSchemaName != null && !existingSchemaName.equals(defName)) {
-                schemaNameAliases.put(defName, existingSchemaName);
-            }
-        }
-    }
-
-    private String findExistingSchemaName(String schemaName) {
-        String alias = schemaNameAliases.get(schemaName);
-        if (alias != null || generatedSchemas.containsKey(schemaName)) {
-            return alias != null ? alias : schemaName;
-        }
-
-        String baseName = stripNumericSuffix(schemaName);
-        if (baseName == null) {
-            return null;
-        }
-        if (generatedSchemas.containsKey(baseName)) {
-            return baseName;
-        }
-        // Also check if any numbered variant of baseName already exists (e.g. baseName-1)
-        for (String existing : generatedSchemas.keySet()) {
-            String existingBase = stripNumericSuffix(existing);
-            if (baseName.equals(existingBase)) {
-                return existing;
-            }
-        }
-        // Also check aliases for numbered variants
-        for (Map.Entry<String, String> aliasEntry : schemaNameAliases.entrySet()) {
-            String aliasBase = stripNumericSuffix(aliasEntry.getKey());
-            if (baseName.equals(aliasBase)) {
-                return aliasEntry.getValue();
-            }
-        }
-        return null;
-    }
-
     private String stripNumericSuffix(String schemaName) {
         int dashIndex = schemaName.lastIndexOf('-');
         if (dashIndex <= 0 || dashIndex == schemaName.length() - 1) {
@@ -1723,298 +1689,6 @@ public class SchemaGenerator {
             }
         }
         return schemaName.substring(0, dashIndex);
-    }
-
-    /**
-     * Resolves a def name to a qualified name when a collision exists, based on the root type
-     * currently being processed. Returns null if no collision exists.
-     *
-     * <p>When a collision is detected, this method also ensures ALL colliding classes
-     * have their schemas registered under their qualified names, so that $refs generated
-     * by extractRefName can be resolved regardless of processing order.</p>
-     *
-     * @param defName the simple def name from victools (e.g., "Status" or "Status-2")
-     * @param rootTypeName the root type being processed (e.g., "EmailNotification")
-     * @param defs the $defs node from the current schema (used to identify which enclosing
-     *             classes are co-located in this schema)
-     * @return qualified name if collision detected, null otherwise
-     */
-    private String resolveDefNameForRoot(String defName, String rootTypeName, JsonNode defs) {
-        // First, try the defName directly
-        Set<Class<?>> classesWithName = classesPerSimpleName.get(defName);
-
-        // If no collision for defName directly, check the base name (strip numeric suffix)
-        // This handles victools-generated names like "Status-1", "Status-2" where the
-        // base name "Status" has a collision.
-        String baseName = null;
-        boolean isNumberedVariant = false;
-        if (classesWithName == null || classesWithName.size() <= 1) {
-            baseName = stripNumericSuffix(defName);
-            if (baseName != null) {
-                classesWithName = classesPerSimpleName.get(baseName);
-                isNumberedVariant = (classesWithName != null && classesWithName.size() > 1);
-            }
-        }
-
-        if (classesWithName == null || classesWithName.size() <= 1) {
-            return null; // No collision
-        }
-
-        // For numbered variants, prioritize enum-value matching to identify the exact class
-        // since the enclosing-class checks may be ambiguous when multiple collision candidates
-        // have their enclosing classes as co-located $defs.
-        if (isNumberedVariant && defs != null) {
-            JsonNode defNode = defs.get(defName);
-            if (defNode == null) {
-                // Try with sanitized name
-                defNode = defs.get(sanitizeSchemaName(defName));
-            }
-            if (defNode != null && defNode.has("enum")) {
-                Set<String> defEnumValues = new HashSet<>();
-                defNode.get("enum").forEach(n -> defEnumValues.add(n.asText()));
-                for (Class<?> clazz : classesWithName) {
-                    if (clazz.isEnum()) {
-                        Set<String> classEnumValues = new HashSet<>();
-                        for (Object constant : clazz.getEnumConstants()) {
-                            classEnumValues.add(((Enum<?>) constant).name());
-                        }
-                        if (defEnumValues.equals(classEnumValues)) {
-                            ensureAllCollisionSchemasRegistered(classesWithName);
-                            return resolveSchemaName(clazz);
-                        }
-                    }
-                }
-            }
-            // Also try property matching for non-enum numbered variants
-            if (defNode != null) {
-                Class<?> matched = matchDefNodeToClass(defNode, classesWithName);
-                if (matched != null) {
-                    ensureAllCollisionSchemasRegistered(classesWithName);
-                    return resolveSchemaName(matched);
-                }
-            }
-        }
-
-        // First check: enclosing class matches root type directly
-        for (Class<?> clazz : classesWithName) {
-            Class<?> enclosing = clazz.getEnclosingClass();
-            if (enclosing != null && enclosing.getSimpleName().equals(rootTypeName)) {
-                ensureAllCollisionSchemasRegistered(classesWithName);
-                return resolveSchemaName(clazz);
-            }
-        }
-
-        // Second check: find the class whose enclosing class is also a $def in this schema.
-        // Only use this when there's exactly ONE candidate with a co-located enclosing def.
-        if (defs != null) {
-            List<Class<?>> candidates = new ArrayList<>();
-            for (Class<?> clazz : classesWithName) {
-                Class<?> enclosing = clazz.getEnclosingClass();
-                if (enclosing != null && defs.has(enclosing.getSimpleName())) {
-                    candidates.add(clazz);
-                }
-            }
-            if (candidates.size() == 1) {
-                ensureAllCollisionSchemasRegistered(classesWithName);
-                return resolveSchemaName(candidates.get(0));
-            }
-        }
-
-        // Third check: match by enum values in the def node against class constants.
-        if (defs != null) {
-            JsonNode defNode = defs.get(defName);
-            if (defNode != null && defNode.has("enum")) {
-                Set<String> defEnumValues = new HashSet<>();
-                defNode.get("enum").forEach(n -> defEnumValues.add(n.asText()));
-                for (Class<?> clazz : classesWithName) {
-                    if (clazz.isEnum()) {
-                        Set<String> classEnumValues = new HashSet<>();
-                        for (Object constant : clazz.getEnumConstants()) {
-                            classEnumValues.add(((Enum<?>) constant).name());
-                        }
-                        if (defEnumValues.equals(classEnumValues)) {
-                            ensureAllCollisionSchemasRegistered(classesWithName);
-                            return resolveSchemaName(clazz);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fourth check: match by property names in the def node against class fields/record components.
-        // This handles non-enum types (e.g., inner records) where enum-value matching doesn't apply.
-        if (defs != null) {
-            JsonNode defNode = defs.get(defName);
-            if (defNode == null) {
-                defNode = defs.get(sanitizeSchemaName(defName));
-            }
-            Class<?> matched = matchDefNodeToClass(defNode, classesWithName);
-            if (matched != null) {
-                ensureAllCollisionSchemasRegistered(classesWithName);
-                return resolveSchemaName(matched);
-            }
-        }
-
-        // Fallback: qualify with root type name
-        ensureAllCollisionSchemasRegistered(classesWithName);
-        return qualifyDefNameForRoot(baseName != null ? baseName : defName, rootTypeName);
-    }
-
-    /**
-     * Ensures all classes involved in a name collision have their schemas registered
-     * under their qualified names. This guarantees that any $ref computed by extractRefName
-     * can be resolved, regardless of the order in which types are processed.
-     * Also removes any ambiguous simple-name schema that was stored before the collision
-     * was detected.
-     */
-    private void ensureAllCollisionSchemasRegistered(Set<Class<?>> classesWithName) {
-        String simpleName = null;
-        // Capture the existing schema under the simple name BEFORE resolveSchemaName removes it
-        Schema<?> existingSimpleNameSchema = null;
-        Class<?> simpleNameOwner = null;
-
-        for (Class<?> clazz : classesWithName) {
-            if (simpleName == null) {
-                simpleName = clazz.getSimpleName();
-                existingSimpleNameSchema = generatedSchemas.get(simpleName);
-                simpleNameOwner = classRegistry.get(simpleName);
-            }
-            break;
-        }
-
-        for (Class<?> clazz : classesWithName) {
-            if (simpleName == null) simpleName = clazz.getSimpleName();
-            String qualifiedName = resolveSchemaName(clazz);
-            if (clazz.isEnum()) {
-                // Always create from the actual class constants to ensure correctness,
-                // regardless of what the retroactive rename may have stored previously.
-                StringSchema enumSchema = new StringSchema();
-                for (Object constant : clazz.getEnumConstants()) {
-                    enumSchema.addEnumItem(((Enum<?>) constant).name());
-                }
-                generatedSchemas.put(qualifiedName, enumSchema);
-            }
-        }
-        // Remove the ambiguous simple-name schema if it exists (it was stored before
-        // the collision was detected and shouldn't remain in the final output)
-        if (simpleName != null && generatedSchemas.containsKey(simpleName)) {
-            generatedSchemas.remove(simpleName);
-        }
-        // For non-enum types: if there was a schema stored under the simple name,
-        // move it to the correct qualified name (the class that originally stored it,
-        // identified via classRegistry which uses putIfAbsent on simple names).
-        if (existingSimpleNameSchema != null && simpleNameOwner != null && !simpleNameOwner.isEnum()) {
-            String ownerQualified = resolvedSchemaNames.get(simpleNameOwner);
-            if (ownerQualified != null && !generatedSchemas.containsKey(ownerQualified)) {
-                generatedSchemas.put(ownerQualified, existingSimpleNameSchema);
-            }
-        }
-    }
-
-    /**
-     * Computes a qualified def name using the root type as a prefix.
-     * Used as a fallback when the def class cannot be found via enclosing class lookup.
-     *
-     * @param defName the simple def name
-     * @param rootTypeName the root type name to use as prefix
-     * @return the qualified name (e.g., "EmailNotificationStatus")
-     */
-    private String qualifyDefNameForRoot(String defName, String rootTypeName) {
-        return rootTypeName + defName;
-    }
-
-    /**
-     * Checks if registering a schema under defName would be a collision with a different
-     * class's schema (i.e., the existing schema has different content, not just a numbered duplicate).
-     *
-     * @param defName the def name being registered
-     * @param defNode the JSON node for the new def
-     * @return true if the existing schema under defName represents a different type
-     */
-    @SuppressWarnings("unchecked")
-    private boolean isSchemaNameCollision(String defName, JsonNode defNode) {
-        Set<Class<?>> classesWithName = classesPerSimpleName.get(defName);
-        if (classesWithName != null && classesWithName.size() > 1) {
-            return true;
-        }
-
-        // Also check by base name (strip numeric suffix, e.g., "Status-2" → "Status")
-        String baseName = stripNumericSuffix(defName);
-        if (baseName != null) {
-            Set<Class<?>> classesWithBaseName = classesPerSimpleName.get(baseName);
-            if (classesWithBaseName != null && classesWithBaseName.size() > 1) {
-                return true;
-            }
-        }
-
-        // Also check by content: if existing schema has different enum values
-        String lookupName = baseName != null ? baseName : defName;
-        Schema<?> existing = generatedSchemas.get(lookupName);
-        if (existing == null) {
-            // Check if it's an alias
-            String aliased = schemaNameAliases.get(lookupName);
-            if (aliased != null) {
-                existing = generatedSchemas.get(aliased);
-            }
-        }
-        if (existing != null && existing.getEnum() != null && defNode.has("enum")) {
-            @SuppressWarnings("unchecked")
-            List<Object> existingEnumValues = (List<Object>) existing.getEnum();
-            List<String> newEnumValues = new ArrayList<>();
-            defNode.get("enum").forEach(n -> newEnumValues.add(n.asText()));
-            if (!existingEnumValues.equals(newEnumValues)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Matches a JSON Schema def node to the most likely class from a set of collision candidates
-     * by comparing the def's property names against each class's record components or declared fields.
-     *
-     * @param defNode the JSON node for the def (must have a "properties" object for matching)
-     * @param candidates the set of candidate classes sharing the same simple name
-     * @return the best-matching class, or null if no match can be determined
-     */
-    private Class<?> matchDefNodeToClass(JsonNode defNode, Set<Class<?>> candidates) {
-        if (defNode == null || !defNode.has("properties")) return null;
-
-        Set<String> defProperties = new HashSet<>();
-        defNode.get("properties").fieldNames().forEachRemaining(defProperties::add);
-        if (defProperties.isEmpty()) return null;
-
-        Class<?> bestMatch = null;
-        int bestScore = 0;
-
-        for (Class<?> clazz : candidates) {
-            Set<String> classFields = new HashSet<>();
-            if (clazz.isRecord()) {
-                for (var component : clazz.getRecordComponents()) {
-                    classFields.add(component.getName());
-                }
-            } else {
-                for (var field : clazz.getDeclaredFields()) {
-                    if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
-                        classFields.add(field.getName());
-                    }
-                }
-            }
-
-            // Count matching fields
-            int score = 0;
-            for (String prop : defProperties) {
-                if (classFields.contains(prop)) score++;
-            }
-
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = clazz;
-            }
-        }
-
-        // Only return a match if at least one property matched and the best match is unambiguous
-        return bestScore > 0 ? bestMatch : null;
     }
 
     private JsonNode resolveRootSchemaNode(JsonNode jsonSchema, JsonNode defs, Set<String> rootAliases) {
@@ -2427,53 +2101,8 @@ public class SchemaGenerator {
             return null;
         }
 
-        String sanitizedRefName = sanitizeSchemaName(refName);
-        // Check if this ref name has a collision and resolve using context
-        Set<Class<?>> classesWithName = classesPerSimpleName.get(sanitizedRefName);
-
-        // Also check the base name for numbered variants (e.g., "Status-1" → "Status")
-        if (classesWithName == null || classesWithName.size() <= 1) {
-            String baseName = stripNumericSuffix(sanitizedRefName);
-            if (baseName != null) {
-                Set<Class<?>> baseClasses = classesPerSimpleName.get(baseName);
-                if (baseClasses != null && baseClasses.size() > 1) {
-                    classesWithName = baseClasses;
-                }
-            }
-        }
-
-        if (classesWithName != null && classesWithName.size() > 1) {
-            // Collision: find the class that belongs to currentTypeName's context
-            for (Class<?> clazz : classesWithName) {
-                Class<?> enclosing = clazz.getEnclosingClass();
-                if (enclosing != null && enclosing.getSimpleName().equals(currentTypeName)) {
-                    return resolveSchemaName(clazz);
-                }
-            }
-            // Second pass: find a class whose enclosing class is known and reachable
-            // from the current context (e.g., ComponentHealth uses HealthStatus.Status)
-            for (Class<?> clazz : classesWithName) {
-                Class<?> enclosing = clazz.getEnclosingClass();
-                if (enclosing != null) {
-                    // Check if currentTypeName is a nested class OF the enclosing class
-                    Class<?> currentClass = classRegistry.get(currentTypeName);
-                    if (currentClass != null && currentClass.getEnclosingClass() != null
-                            && currentClass.getEnclosingClass().getSimpleName().equals(enclosing.getSimpleName())) {
-                        return resolveSchemaName(clazz);
-                    }
-                }
-            }
-            // If no enclosing class match, check if there's an alias registered
-            String alias = schemaNameAliases.get(sanitizedRefName);
-            if (alias != null) {
-                return alias;
-            }
-            // Last resort: use the first class's resolved name (deterministic via iteration order)
-            for (Class<?> clazz : classesWithName) {
-                return resolveSchemaName(clazz);
-            }
-        }
-
+        // Def names are already canonical, globally-unambiguous internal names — no
+        // collision disambiguation needed. Just normalise (strip -nullable, follow aliases).
         return canonicalSchemaName(refName);
     }
 
@@ -2612,104 +2241,22 @@ public class SchemaGenerator {
     }
 
     /**
-     * Resolves the canonical schema name for a class, handling collisions
-     * by fully qualifying names when multiple different classes share the same simple name.
-     *
-     * <p>Strategy for qualified names:</p>
-     * <ul>
-     *   <li>Inner/nested classes: prefix with enclosing class name (e.g., EmailNotification.Status → EmailNotificationStatus)</li>
-     *   <li>Top-level classes in different packages: prefix with last package segment</li>
-     * </ul>
+     * Resolves the canonical internal schema name for a class: its enclosing-chain
+     * qualified name (see {@link #internalNameForClass}). Always unambiguous; collapsed
+     * to a minimal display name in {@link #getGeneratedSchemas}.
      *
      * @param type the class to resolve a schema name for
-     * @return the canonical schema name (simple name if no collision, qualified otherwise)
+     * @return the canonical internal schema name
      */
     private String resolveSchemaName(Class<?> type) {
-        // Return cached resolution if available
         String cached = resolvedSchemaNames.get(type);
         if (cached != null) {
             return cached;
         }
-
-        String simpleName = type.getSimpleName();
-        Set<Class<?>> classesWithSameName = classesPerSimpleName.get(simpleName);
-
-        // No collision: use simple name
-        if (classesWithSameName == null || classesWithSameName.size() <= 1) {
-            resolvedSchemaNames.put(type, simpleName);
-            return simpleName;
-        }
-
-        // Collision detected: compute qualified name
-        String qualifiedName = computeQualifiedName(type);
-        resolvedSchemaNames.put(type, qualifiedName);
-        // Also register the qualified name in classRegistry so enrichAllGeneratedSchemas
-        // and rewriteCollidingRefs can look up the class for qualified schema names.
-        classRegistry.putIfAbsent(qualifiedName, type);
-
-        // Retroactively re-qualify the other class(es) that share this simple name
-        for (Class<?> otherClass : classesWithSameName) {
-            if (otherClass == type) continue;
-            String otherResolved = resolvedSchemaNames.get(otherClass);
-            if (otherResolved == null || otherResolved.equals(simpleName)) {
-                String otherQualified = computeQualifiedName(otherClass);
-                resolvedSchemaNames.put(otherClass, otherQualified);
-                classRegistry.putIfAbsent(otherQualified, otherClass);
-            }
-        }
-
-        // Remove the ambiguous simple name from generatedSchemas — the correct qualified
-        // schemas will be created by ensureAllCollisionSchemasRegistered.
-        // DON'T set a global alias since the simple name maps to different qualified names
-        // depending on context; the collision-aware rewrite pass in getGeneratedSchemas handles it.
-        if (generatedSchemas.containsKey(simpleName)) {
-            Schema<?> removedSchema = generatedSchemas.remove(simpleName);
-            logger.accept("Removed ambiguous schema '" + simpleName + "' (collision detected)");
-            // For non-enum types: move the schema to its owner's qualified name so it isn't lost.
-            // classRegistry tells us which class originally stored this schema (first-registered wins).
-            if (removedSchema != null) {
-                Class<?> ownerClass = classRegistry.get(simpleName);
-                if (ownerClass != null && !ownerClass.isEnum()) {
-                    String ownerQualified = resolvedSchemaNames.get(ownerClass);
-                    if (ownerQualified != null && !generatedSchemas.containsKey(ownerQualified)) {
-                        generatedSchemas.put(ownerQualified, removedSchema);
-                    }
-                }
-            }
-        }
-
-        return qualifiedName;
-    }
-
-    /**
-     * Computes a qualified schema name for a class that has a name collision.
-     * Uses the enclosing class name as prefix for inner classes, or the last
-     * package segment for top-level classes.
-     */
-    private String computeQualifiedName(Class<?> type) {
-        Class<?> enclosing = type.getEnclosingClass();
-        if (enclosing != null) {
-            // Inner/nested class: EnclosingSimpleName + SimpleName
-            return enclosing.getSimpleName() + type.getSimpleName();
-        }
-
-        // Top-level class: use last meaningful package segment as prefix
-        String packageName = type.getPackageName();
-        if (packageName != null && !packageName.isEmpty()) {
-            String[] segments = packageName.split("\\.");
-            // Find last segment that isn't a generic term
-            for (int i = segments.length - 1; i >= 0; i--) {
-                String segment = segments[i];
-                if (!segment.equals("model") && !segment.equals("domain")
-                        && !segment.equals("dto") && !segment.equals("api")) {
-                    String prefix = Character.toUpperCase(segment.charAt(0)) + segment.substring(1);
-                    return prefix + type.getSimpleName();
-                }
-            }
-        }
-
-        // Fallback: use full canonical name with dots replaced
-        return type.getCanonicalName().replace('.', '_');
+        String name = internalNameForClass(type);
+        resolvedSchemaNames.put(type, name);
+        classRegistry.putIfAbsent(name, type);
+        return name;
     }
 
     /**
@@ -2778,9 +2325,16 @@ public class SchemaGenerator {
             }
         }
 
-        // Collision-aware ref rewrite: fix pre-collision $refs that point to ambiguous
-        // simple names (e.g., "Status") by resolving them using the owning class context.
-        rewriteCollidingRefs(result);
+        // Final pass: collapse each qualified internal name to its simple name when that
+        // simple name is globally unique among components. Ambiguous ones stay qualified.
+        Map<String, String> collapseReplacements = collapseToMinimalNames(result);
+
+        // Redirect any dangling victools "-N" duplicate refs to their surviving component.
+        repairDanglingNumberedRefs(result, collapseReplacements);
+
+        // Record the cumulative internal-name -> final-name mapping so callers can normalise
+        // any $refs they built from internal names (e.g. path-level response refs).
+        recordSchemaNameReplacements(replacements, collapseReplacements);
 
         // Final safety pass: strip any remaining $refs that point to internal framework types
         // (may have been emitted before interception was possible)
@@ -2789,6 +2343,40 @@ public class SchemaGenerator {
         }
 
         return Collections.unmodifiableMap(result);
+    }
+
+    /**
+     * Composes the dedup and collapse replacement maps into a single, transitively-resolved
+     * internal-name → final-display-name map and stores it for {@link #getSchemaNameReplacements()}.
+     */
+    private void recordSchemaNameReplacements(
+            Map<String, String> dedupReplacements, Map<String, String> collapseReplacements) {
+        Map<String, String> combined = new LinkedHashMap<>();
+        combined.putAll(dedupReplacements);
+        combined.putAll(collapseReplacements);
+
+        lastSchemaNameReplacements.clear();
+        for (String key : combined.keySet()) {
+            String resolved = key;
+            Set<String> seen = new HashSet<>();
+            while (combined.containsKey(resolved) && seen.add(resolved)) {
+                resolved = combined.get(resolved);
+            }
+            if (!resolved.equals(key)) {
+                lastSchemaNameReplacements.put(key, resolved);
+            }
+        }
+    }
+
+    /**
+     * Returns the internal-name → final-component-name replacements applied by the most
+     * recent {@link #getGeneratedSchemas()} call. Callers that constructed {@code $ref}s from
+     * internal (enclosing-chain qualified) names should apply these to keep refs resolvable.
+     *
+     * @return an unmodifiable view of the current replacement map
+     */
+    public Map<String, String> getSchemaNameReplacements() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(lastSchemaNameReplacements));
     }
 
     /**
@@ -2836,78 +2424,141 @@ public class SchemaGenerator {
         if (schema.getAllOf() != null) {
             schema.getAllOf().forEach(s -> rewriteRefs(s, replacements));
         }
-    }
 
-    /**
-     * Rewrites $refs that point to colliding simple names by resolving them using the
-     * owning class context. For example, if "SmsNotification" schema has a property with
-     * $ref pointing to "Status" (set before collision was detected), this resolves it to
-     * "SmsNotificationStatus" by finding that SmsNotification has an inner Status class.
-     */
-    private void rewriteCollidingRefs(Map<String, Schema<?>> schemas) {
-        String prefix = "#/components/schemas/";
-        for (Map.Entry<String, Schema<?>> entry : schemas.entrySet()) {
-            String schemaName = entry.getKey();
-            Class<?> ownerClass = classRegistry.get(schemaName);
-            if (ownerClass == null) continue;
-            rewriteCollidingRefsInSchema(entry.getValue(), ownerClass, prefix);
+        // Rewrite a title that mirrors a renamed schema name (used by polymorphic subtypes).
+        if (schema.getTitle() != null) {
+            String titleReplacement = replacements.get(schema.getTitle());
+            if (titleReplacement != null) {
+                schema.setTitle(titleReplacement);
+            }
         }
-    }
 
-    private void rewriteCollidingRefsInSchema(Schema<?> schema, Class<?> ownerClass, String prefix) {
-        if (schema == null) return;
-
-        if (schema.get$ref() != null) {
-            String ref = schema.get$ref();
-            if (ref.startsWith(prefix)) {
-                String name = ref.substring(prefix.length());
-                Set<Class<?>> collision = classesPerSimpleName.get(name);
-                if (collision != null && collision.size() > 1) {
-                    // Find the class that's an inner class of ownerClass
-                    for (Class<?> clazz : collision) {
-                        if (clazz.getEnclosingClass() == ownerClass) {
-                            schema.set$ref(prefix + resolveSchemaName(clazz));
-                            break;
-                        }
-                    }
-                    // If not found, check if ownerClass is itself nested inside the
-                    // collision candidate's enclosing class (e.g., ComponentHealth is nested
-                    // inside HealthStatus, which is also the enclosing class of HealthStatus.Status)
-                    if (schema.get$ref().equals(ref)) {
-                        Class<?> enclosingOfOwner = ownerClass.getEnclosingClass();
-                        if (enclosingOfOwner != null) {
-                            for (Class<?> clazz : collision) {
-                                if (clazz.getEnclosingClass() == enclosingOfOwner) {
-                                    schema.set$ref(prefix + resolveSchemaName(clazz));
-                                    break;
-                                }
-                            }
-                        }
+        // Rewrite discriminator mapping targets (values are #/components/schemas/<name>)
+        if (schema.getDiscriminator() != null && schema.getDiscriminator().getMapping() != null) {
+            String prefix = "#/components/schemas/";
+            Map<String, String> mapping = schema.getDiscriminator().getMapping();
+            for (Map.Entry<String, String> e : mapping.entrySet()) {
+                String val = e.getValue();
+                if (val != null && val.startsWith(prefix)) {
+                    String replacement = replacements.get(val.substring(prefix.length()));
+                    if (replacement != null) {
+                        e.setValue(prefix + replacement);
                     }
                 }
             }
         }
+    }
 
-        if (schema.getProperties() != null) {
-            for (Object prop : schema.getProperties().values()) {
-                rewriteCollidingRefsInSchema((Schema<?>) prop, ownerClass, prefix);
+    /**
+     * Collapses qualified internal schema names to their simple names where unambiguous.
+     *
+     * <p>Every component is keyed by an unambiguous, enclosing-chain qualified internal
+     * name. For each class-backed component whose simple name is globally unique among all
+     * components, the key is renamed to that simple name. Components whose simple name is
+     * shared by more than one class keep their qualified name. All {@code $ref}s and
+     * discriminator mappings are rewritten to follow the renames.</p>
+     */
+    private Map<String, String> collapseToMinimalNames(Map<String, Schema<?>> schemas) {
+        // Count how many class-backed component keys map to each simple name.
+        Map<String, Integer> simpleCounts = new HashMap<>();
+        for (String key : schemas.keySet()) {
+            Class<?> cls = classRegistry.get(key);
+            if (cls == null) continue;
+            simpleCounts.merge(sanitizeSchemaName(cls.getSimpleName()), 1, Integer::sum);
+        }
+
+        // Plan renames: qualified key -> simple name when that simple name is unique.
+        Map<String, String> replacements = new LinkedHashMap<>();
+        for (String key : schemas.keySet()) {
+            Class<?> cls = classRegistry.get(key);
+            if (cls == null) continue;
+            String simple = sanitizeSchemaName(cls.getSimpleName());
+            if (simple.equals(key)) continue;
+            if (simpleCounts.getOrDefault(simple, 0) == 1 && !schemas.containsKey(simple)) {
+                replacements.put(key, simple);
             }
+        }
+
+        if (replacements.isEmpty()) return replacements;
+
+        // Apply key renames preserving order.
+        Map<String, Schema<?>> renamed = new LinkedHashMap<>();
+        schemas.forEach((k, v) -> renamed.put(replacements.getOrDefault(k, k), v));
+        schemas.clear();
+        schemas.putAll(renamed);
+
+        // Rewrite all $refs and discriminator mappings to the new names.
+        for (Schema<?> schema : schemas.values()) {
+            rewriteRefs(schema, replacements);
+        }
+        return replacements;
+    }
+
+    /**
+     * Repairs dangling {@code $ref}s left by victools' duplicate-name suffixing.
+     *
+     * <p>When the same nested type is materialised both as a standalone definition and
+     * inline (e.g. a sealed-interface field rendered as a {@code oneOf}), victools emits a
+     * suffixed alias such as {@code FooBar-1} that is referenced but never stored as a
+     * component. This redirects any such dangling reference to the surviving component,
+     * following the simple-name collapse performed in {@link #collapseToMinimalNames}.</p>
+     */
+    private void repairDanglingNumberedRefs(Map<String, Schema<?>> schemas, Map<String, String> collapseReplacements) {
+        Set<String> present = schemas.keySet();
+        Set<String> targets = new HashSet<>();
+        for (Schema<?> schema : schemas.values()) {
+            collectRefTargets(schema, targets);
+        }
+
+        Map<String, String> fix = new LinkedHashMap<>();
+        for (String target : targets) {
+            if (present.contains(target)) continue;
+            String base = stripNumericSuffix(target);
+            if (base == null) continue;
+            String resolved = collapseReplacements.getOrDefault(base, base);
+            if (present.contains(resolved)) {
+                fix.put(target, resolved);
+            }
+        }
+
+        if (!fix.isEmpty()) {
+            for (Schema<?> schema : schemas.values()) {
+                rewriteRefs(schema, fix);
+            }
+        }
+    }
+
+    private void collectRefTargets(Schema<?> schema, Set<String> targets) {
+        if (schema == null) return;
+        String prefix = "#/components/schemas/";
+        if (schema.get$ref() != null && schema.get$ref().startsWith(prefix)) {
+            targets.add(schema.get$ref().substring(prefix.length()));
+        }
+        if (schema.getProperties() != null) {
+            schema.getProperties().values().forEach(p -> collectRefTargets((Schema<?>) p, targets));
         }
         Object addProps = schema.getAdditionalProperties();
         if (addProps instanceof Schema) {
-            rewriteCollidingRefsInSchema((Schema<?>) addProps, ownerClass, prefix);
+            collectRefTargets((Schema<?>) addProps, targets);
         }
         if (schema.getItems() != null) {
-            rewriteCollidingRefsInSchema(schema.getItems(), ownerClass, prefix);
+            collectRefTargets(schema.getItems(), targets);
         }
         if (schema.getOneOf() != null) {
-            schema.getOneOf().forEach(s -> rewriteCollidingRefsInSchema(s, ownerClass, prefix));
+            schema.getOneOf().forEach(s -> collectRefTargets(s, targets));
         }
         if (schema.getAnyOf() != null) {
-            schema.getAnyOf().forEach(s -> rewriteCollidingRefsInSchema(s, ownerClass, prefix));
+            schema.getAnyOf().forEach(s -> collectRefTargets(s, targets));
         }
         if (schema.getAllOf() != null) {
-            schema.getAllOf().forEach(s -> rewriteCollidingRefsInSchema(s, ownerClass, prefix));
+            schema.getAllOf().forEach(s -> collectRefTargets(s, targets));
+        }
+        if (schema.getDiscriminator() != null && schema.getDiscriminator().getMapping() != null) {
+            for (String val : schema.getDiscriminator().getMapping().values()) {
+                if (val != null && val.startsWith(prefix)) {
+                    targets.add(val.substring(prefix.length()));
+                }
+            }
         }
     }
 
@@ -2959,8 +2610,8 @@ public class SchemaGenerator {
         generatedSchemas.clear();
         schemaNameAliases.clear();
         subtypeToParentMap.clear();
-        classesPerSimpleName.clear();
         resolvedSchemaNames.clear();
+        lastSchemaNameReplacements.clear();
     }
 
     /**
