@@ -524,31 +524,46 @@ public class OpenAPIModelBuilder {
 
         // Generate schema for the request body type
         java.lang.reflect.Type javaType = requestBodyMeta.getJavaType();
-        Schema<?> schema = schemaGenerator.generateSchema(javaType);
 
-        // Use reference if the type was added to schemas
-        String typeName = getTypeName(javaType);
-        if (schemaGenerator.hasSchema(typeName)) {
+        requestBody.setContent(buildContent(
+            javaType, requestBodyMeta.getMediaType(), requestBodyMeta.getExample()));
+
+        return requestBody;
+    }
+
+    /**
+     * Resolves the schema for a Java type, returning a {@code $ref} to the component when the
+     * type is registered as a named component schema. Resolution uses the generator's canonical
+     * internal name so nested types ref consistently rather than being inlined into whichever
+     * operation happens to be processed first.
+     */
+    private Schema<?> resolveSchema(java.lang.reflect.Type javaType) {
+        Schema<?> schema = schemaGenerator.generateSchema(javaType);
+        String typeName = schemaGenerator.getComponentName(javaType);
+        if (typeName != null && schemaGenerator.hasSchema(typeName)) {
             Schema<?> refSchema = new Schema<>();
             refSchema.set$ref("#/components/schemas/" + typeName);
-            schema = refSchema;
+            return refSchema;
+        }
+        return schema;
+    }
+
+    /**
+     * Builds a {@link Content} for a single media type wrapping the schema for the given Java type,
+     * attaching the example when present.
+     */
+    private Content buildContent(java.lang.reflect.Type javaType, String mediaTypeName, Object example) {
+        String contentType = mediaTypeName != null ? mediaTypeName : DEFAULT_CONTENT_TYPE;
+
+        MediaType mediaType = new MediaType();
+        mediaType.setSchema(resolveSchema(javaType));
+        if (example != null) {
+            mediaType.setExample(example);
         }
 
         Content content = new Content();
-        String contentType = requestBodyMeta.getMediaType() != null ?
-            requestBodyMeta.getMediaType() : DEFAULT_CONTENT_TYPE;
-
-        MediaType mediaType = new MediaType();
-        mediaType.setSchema(schema);
-
-        if (requestBodyMeta.getExample() != null) {
-            mediaType.setExample(requestBodyMeta.getExample());
-        }
-
         content.addMediaType(contentType, mediaType);
-        requestBody.setContent(content);
-
-        return requestBody;
+        return content;
     }
 
     private ApiResponses buildResponses(OperationMetadata operation) {
@@ -575,32 +590,10 @@ public class OpenAPIModelBuilder {
 
         java.lang.reflect.Type responseType = responseMeta.getResponseType();
         if (responseMeta.hasBody()) {
-            Schema<?> schema = schemaGenerator.generateSchema(responseType);
+            Object example = responseMeta.getExamples().isEmpty() ? null
+                : responseMeta.getExamples().values().stream().findFirst().orElse(null);
 
-            // Use reference if the type was added to schemas
-            String typeName = getTypeName(responseType);
-            if (schemaGenerator.hasSchema(typeName)) {
-                Schema<?> refSchema = new Schema<>();
-                refSchema.set$ref("#/components/schemas/" + typeName);
-                schema = refSchema;
-            }
-
-            Content content = new Content();
-            String contentType = responseMeta.getMediaType() != null ?
-                responseMeta.getMediaType() : DEFAULT_CONTENT_TYPE;
-
-            MediaType mediaType = new MediaType();
-            mediaType.setSchema(schema);
-
-            // Add examples if available
-            if (!responseMeta.getExamples().isEmpty()) {
-                // Use first example as the main example
-                responseMeta.getExamples().values().stream().findFirst()
-                    .ifPresent(mediaType::setExample);
-            }
-
-            content.addMediaType(contentType, mediaType);
-            response.setContent(content);
+            response.setContent(buildContent(responseType, responseMeta.getMediaType(), example));
         }
 
         return response;
@@ -616,29 +609,6 @@ public class OpenAPIModelBuilder {
             case HEAD -> pathItem.setHead(operation);
             case OPTIONS -> pathItem.setOptions(operation);
         }
-    }
-
-    private String getTypeName(java.lang.reflect.Type type) {
-        if (type instanceof Class<?>) {
-            return ((Class<?>) type).getSimpleName();
-        } else if (type instanceof java.lang.reflect.ParameterizedType parameterizedType) {
-            java.lang.reflect.Type rawType = parameterizedType.getRawType();
-            if (rawType instanceof Class<?> rawClass) {
-                StringBuilder name = new StringBuilder(rawClass.getSimpleName());
-                for (java.lang.reflect.Type arg : parameterizedType.getActualTypeArguments()) {
-                    if (arg instanceof Class<?> argClass) {
-                        name.append(argClass.getSimpleName());
-                    } else if (arg instanceof java.lang.reflect.ParameterizedType argPt) {
-                        java.lang.reflect.Type argRaw = argPt.getRawType();
-                        if (argRaw instanceof Class<?> argRawClass) {
-                            name.append(argRawClass.getSimpleName());
-                        }
-                    }
-                }
-                return name.toString();
-            }
-        }
-        return type.getTypeName();
     }
 
     /**
