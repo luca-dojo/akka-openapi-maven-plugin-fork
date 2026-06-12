@@ -739,6 +739,14 @@ public class OpenAPIModelBuilder {
             if (pathItem == null) {
                 continue;
             }
+            if (pathItem.getParameters() != null) {
+                for (Parameter parameter : pathItem.getParameters()) {
+                    if (parameter != null) {
+                        rewriteSchemaRefs(parameter.getSchema(), replacements);
+                        rewriteContentRefs(parameter.getContent(), replacements);
+                    }
+                }
+            }
             pathItem.readOperations().forEach(op -> rewriteOperationRefs(op, replacements));
         }
     }

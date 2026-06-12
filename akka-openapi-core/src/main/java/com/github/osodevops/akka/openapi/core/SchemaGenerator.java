@@ -51,7 +51,7 @@ public class SchemaGenerator {
     private final Map<String, String> subtypeToParentMap;
     private final Consumer<String> logger;
     private final Set<String> processingTypes;
-    /** Registry mapping simple class name → Class<?> for enrichRequiredFields post-processing on defs. */
+    /** Registry mapping internal schema name → Class<?> for enrichRequiredFields post-processing on defs. */
     private final Map<String, Class<?>> classRegistry;
     /** Canonical internal schema name resolved for each class (enclosing-chain qualified). */
     private final Map<Class<?>, String> resolvedSchemaNames;
@@ -2332,6 +2332,11 @@ public class SchemaGenerator {
         // Redirect any dangling victools "-N" duplicate refs to their surviving component.
         repairDanglingNumberedRefs(result, collapseReplacements);
 
+        // Collapse redundant anyOf/oneOf unions left by victools' inline rendering of
+        // polymorphic fields back to a single $ref (restoring the discriminator link
+        // for fields typed as a discriminated parent).
+        collapseRedundantUnions(result);
+
         // Record the cumulative internal-name -> final-name mapping so callers can normalise
         // any $refs they built from internal names (e.g. path-level response refs).
         recordSchemaNameReplacements(replacements, collapseReplacements);
@@ -2526,6 +2531,117 @@ public class SchemaGenerator {
                 rewriteRefs(schema, fix);
             }
         }
+    }
+
+    /**
+     * Collapses redundant {@code anyOf}/{@code oneOf} unions produced when victools renders
+     * a polymorphic field inline instead of referencing the parent component:
+     *
+     * <ul>
+     *   <li>a union whose branches all reference the same component (e.g.
+     *       {@code anyOf: [X, X, X]} after numbered-ref repair) becomes a single
+     *       {@code $ref} to that component;</li>
+     *   <li>a union whose branch set exactly matches the {@code oneOf} subtype set of a
+     *       discriminated parent component becomes a {@code $ref} to that parent, restoring
+     *       the discriminator link for consumers and code generators.</li>
+     * </ul>
+     */
+    private void collapseRedundantUnions(Map<String, Schema<?>> schemas) {
+        // Map each discriminated parent's exact subtype-ref set to the parent's name.
+        Map<Set<String>, String> parentBySubtypes = new HashMap<>();
+        for (Map.Entry<String, Schema<?>> entry : schemas.entrySet()) {
+            Schema<?> schema = entry.getValue();
+            if (schema.getDiscriminator() != null && schema.getOneOf() != null) {
+                Set<String> subtypes = pureRefTargets(schema.getOneOf());
+                if (subtypes != null && subtypes.size() > 1) {
+                    parentBySubtypes.putIfAbsent(subtypes, entry.getKey());
+                }
+            }
+        }
+        for (Map.Entry<String, Schema<?>> entry : schemas.entrySet()) {
+            collapseRedundantUnionsIn(entry.getValue(), entry.getKey(), true, parentBySubtypes);
+        }
+    }
+
+    private void collapseRedundantUnionsIn(Schema<?> schema, String componentName,
+            boolean isComponentRoot, Map<Set<String>, String> parentBySubtypes) {
+        if (schema == null) {
+            return;
+        }
+        if (schema.getProperties() != null) {
+            schema.getProperties().values().forEach(p ->
+                collapseRedundantUnionsIn((Schema<?>) p, componentName, false, parentBySubtypes));
+        }
+        Object addProps = schema.getAdditionalProperties();
+        if (addProps instanceof Schema) {
+            collapseRedundantUnionsIn((Schema<?>) addProps, componentName, false, parentBySubtypes);
+        }
+        if (schema.getItems() != null) {
+            collapseRedundantUnionsIn(schema.getItems(), componentName, false, parentBySubtypes);
+        }
+        if (schema.getOneOf() != null) {
+            schema.getOneOf().forEach(s ->
+                collapseRedundantUnionsIn(s, componentName, false, parentBySubtypes));
+        }
+        if (schema.getAnyOf() != null) {
+            schema.getAnyOf().forEach(s ->
+                collapseRedundantUnionsIn(s, componentName, false, parentBySubtypes));
+        }
+        if (schema.getAllOf() != null) {
+            schema.getAllOf().forEach(s ->
+                collapseRedundantUnionsIn(s, componentName, false, parentBySubtypes));
+        }
+
+        // Only a node that is purely a union is a candidate; discriminated parents and
+        // nodes carrying their own structure (type/properties/items/enum) are left intact.
+        if (schema.get$ref() != null || schema.getDiscriminator() != null
+                || schema.getProperties() != null || schema.getItems() != null
+                || schema.getAdditionalProperties() != null || schema.getEnum() != null
+                || schema.getType() != null || schema.getTypes() != null
+                || schema.getAllOf() != null) {
+            return;
+        }
+        boolean isAnyOf = schema.getAnyOf() != null;
+        List<Schema> union = isAnyOf ? schema.getAnyOf() : schema.getOneOf();
+        if (union == null || (isAnyOf && schema.getOneOf() != null)) {
+            return;
+        }
+        Set<String> targets = pureRefTargets(union);
+        if (targets == null) {
+            return;
+        }
+        String replacement = targets.size() == 1
+            ? targets.iterator().next()
+            : parentBySubtypes.get(targets);
+        if (replacement == null) {
+            return;
+        }
+        // Never turn a component's own root into a self-reference.
+        if (isComponentRoot && replacement.equals(componentName)) {
+            return;
+        }
+        if (isAnyOf) {
+            schema.setAnyOf(null);
+        } else {
+            schema.setOneOf(null);
+        }
+        schema.set$ref("#/components/schemas/" + replacement);
+    }
+
+    /**
+     * Returns the distinct component names referenced by the given union branches, or null
+     * if any branch is not a pure {@code $ref} to a component schema.
+     */
+    private Set<String> pureRefTargets(List<Schema> branches) {
+        String prefix = "#/components/schemas/";
+        Set<String> targets = new HashSet<>();
+        for (Schema<?> branch : branches) {
+            if (branch == null || branch.get$ref() == null || !branch.get$ref().startsWith(prefix)) {
+                return null;
+            }
+            targets.add(branch.get$ref().substring(prefix.length()));
+        }
+        return targets.isEmpty() ? null : targets;
     }
 
     private void collectRefTargets(Schema<?> schema, Set<String> targets) {

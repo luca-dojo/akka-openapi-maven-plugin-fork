@@ -842,6 +842,43 @@ class SchemaGeneratorTest {
     }
 
     @Test
+    void shouldCollapseDuplicateUnionBranchesToSingleParentRef() {
+        // Shape (discriminated parent) is generated first; the shape field of ShipmentCommand
+        // is then rendered inline by victools as an anyOf of suffixed duplicate refs that all
+        // resolve to the same component. The union must collapse to a single $ref.
+        generator.generateSchema(ShipmentCommand.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        Schema<?> shapeProperty = schemas.get("ShipmentCommand").getProperties().get("shape");
+
+        assertThat(shapeProperty.getAnyOf()).isNull();
+        assertThat(shapeProperty.getOneOf()).isNull();
+        assertThat(shapeProperty.get$ref()).isEqualTo("#/components/schemas/Shape");
+    }
+
+    @Test
+    void shouldRestoreDiscriminatedParentRefForInlineSubtypeUnion() {
+        // Reached through a wrapper, the polymorphic channel field is rendered inline as an
+        // anyOf of the subtype refs. The union must be replaced by a $ref to the discriminated
+        // parent so the discriminator mapping stays reachable from the field.
+        generator.generateSchema(ChannelGroupsResponse.class);
+
+        Map<String, Schema<?>> schemas = generator.getGeneratedSchemas();
+        Schema<?> channelProperty = schemas.get("ChannelGroup").getProperties().get("channel");
+
+        assertThat(channelProperty.getAnyOf()).isNull();
+        assertThat(channelProperty.get$ref()).isEqualTo("#/components/schemas/Channel");
+
+        // The parent component keeps its full discriminated form.
+        Schema<?> channel = schemas.get("Channel");
+        assertThat(channel.getOneOf()).hasSize(2);
+        assertThat(channel.getDiscriminator()).isNotNull();
+        assertThat(channel.getDiscriminator().getMapping())
+            .containsEntry("EMAIL", "#/components/schemas/EmailChannel")
+            .containsEntry("SMS", "#/components/schemas/SmsChannel");
+    }
+
+    @Test
     void shouldStoreCorrectPropertiesForQualifiedInnerRecordSchemas() {
         generator.generateSchema(ReportsResponse.class);
 
