@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.5.0...v1.5.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* cross-endpoint type name collisions ([0a756f2](https://github.com/osodevops/akka-openapi-maven-plugin/commit/0a756f2d8b1dcb964f80f95d8b335b6ea7a5bf27))
+* cross-endpoint type name collisions (supersedes [#71](https://github.com/osodevops/akka-openapi-maven-plugin/issues/71)) ([5c6ddab](https://github.com/osodevops/akka-openapi-maven-plugin/commit/5c6ddab7f61703124655b0f540ebbcb8b3f4f518))
+* **schema:** collapse redundant polymorphic unions to discriminated parent refs ([ba95511](https://github.com/osodevops/akka-openapi-maven-plugin/commit/ba955114cd98a7ac490cc5c031de0d099582387b))
+
 ## [Unreleased](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.5.0...HEAD)
 
 ## [1.5.0](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.4.0...v1.5.0) (2026-06-02)
