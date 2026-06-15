@@ -152,11 +152,10 @@ class OpenAPIModelBuilderTest {
     }
 
     @Test
-    void shouldNormalisePathRefForNestedResponseTypeToFinalComponentName() {
+    void shouldReferenceNestedResponseTypeByFinalComponentNameEveryTime() {
         // A response type nested inside an endpoint class has an internal (qualified) name
         // (FooEndpointFoo) that collapses to its simple name (Foo). Once the type is already
-        // generated, a subsequent response emits a $ref to the internal name; that path-level
-        // $ref must be rewritten to the final component name so it resolves.
+        // generated, every response should emit a resolvable $ref to the shared component.
         EndpointMetadata endpoint = EndpointMetadata.builder()
             .className("FooEndpoint")
             .basePath("/foo")
@@ -184,11 +183,15 @@ class OpenAPIModelBuilderTest {
 
         OpenAPI openAPI = builder.build(List.of(endpoint));
 
-        String ref = openAPI.getPaths().get("/foo/second").getGet()
+        String firstRef = openAPI.getPaths().get("/foo/first").getGet()
+            .getResponses().get("200")
+            .getContent().get("application/json").getSchema().get$ref();
+        String secondRef = openAPI.getPaths().get("/foo/second").getGet()
             .getResponses().get("200")
             .getContent().get("application/json").getSchema().get$ref();
 
-        assertThat(ref).isEqualTo("#/components/schemas/Foo");
+        assertThat(firstRef).isEqualTo("#/components/schemas/Foo");
+        assertThat(secondRef).isEqualTo("#/components/schemas/Foo");
         // The referenced component must exist (no dangling reference).
         assertThat(openAPI.getComponents().getSchemas()).containsKey("Foo");
         assertThat(openAPI.getComponents().getSchemas()).doesNotContainKey("FooEndpointFoo");
@@ -270,6 +273,44 @@ class OpenAPIModelBuilderTest {
         assertThat(operation.getRequestBody().getRequired()).isTrue();
         assertThat(operation.getRequestBody().getDescription()).isEqualTo("Customer to create");
         assertThat(operation.getRequestBody().getContent()).containsKey("application/json");
+    }
+
+    @Test
+    void shouldReferenceNestedRequestBodyTypeByFinalComponentNameEveryTime() {
+        EndpointMetadata endpoint = EndpointMetadata.builder()
+            .className("FooEndpoint")
+            .basePath("/foo")
+            .addOperation(OperationMetadata.builder()
+                .methodName("createFooFirst")
+                .httpMethod(HttpMethod.POST)
+                .path("/first")
+                .requestBody(RequestBodyMetadata.builder()
+                    .javaType(FooEndpoint.Foo.class)
+                    .required(true)
+                    .build())
+                .build())
+            .addOperation(OperationMetadata.builder()
+                .methodName("createFooSecond")
+                .httpMethod(HttpMethod.POST)
+                .path("/second")
+                .requestBody(RequestBodyMetadata.builder()
+                    .javaType(FooEndpoint.Foo.class)
+                    .required(true)
+                    .build())
+                .build())
+            .build();
+
+        OpenAPI openAPI = builder.build(List.of(endpoint));
+
+        String firstRef = openAPI.getPaths().get("/foo/first").getPost()
+            .getRequestBody().getContent().get("application/json").getSchema().get$ref();
+        String secondRef = openAPI.getPaths().get("/foo/second").getPost()
+            .getRequestBody().getContent().get("application/json").getSchema().get$ref();
+
+        assertThat(firstRef).isEqualTo("#/components/schemas/Foo");
+        assertThat(secondRef).isEqualTo("#/components/schemas/Foo");
+        assertThat(openAPI.getComponents().getSchemas()).containsKey("Foo");
+        assertThat(openAPI.getComponents().getSchemas()).doesNotContainKey("FooEndpointFoo");
     }
 
     @Test
