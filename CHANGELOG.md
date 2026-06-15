@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.5.1...v1.5.2) (2026-06-15)
+
+
+### Bug Fixes
+
+* ensure deterministic schema ref resolution for nested types ([8963109](https://github.com/osodevops/akka-openapi-maven-plugin/commit/8963109d416d928eccbf38320124b0572a5cd254))
+* ensure deterministic schema ref resolution for nested types ([abc6cb4](https://github.com/osodevops/akka-openapi-maven-plugin/commit/abc6cb425a63edc466074bb7388c274f092626e6))
+
 ## [1.5.1](https://github.com/osodevops/akka-openapi-maven-plugin/compare/v1.5.0...v1.5.1) (2026-06-12)
 
 
