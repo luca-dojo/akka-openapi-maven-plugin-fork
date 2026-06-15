@@ -98,7 +98,7 @@ public class SchemaGenerator {
      * for {@link #enrichRequiredFields} post-processing, regardless of the nesting depth.
      */
     private void registerClassHierarchy(Class<?> clazz) {
-        registerClassHierarchy(clazz, new HashSet<>());
+        registerClassHierarchy(clazz, new LinkedHashSet<>());
     }
 
     private void registerClassHierarchy(Class<?> clazz, Set<Class<?>> visited) {
@@ -323,6 +323,50 @@ public class SchemaGenerator {
     }
 
     /**
+     * Resolves the canonical internal component name under which {@link #generateSchema}
+     * registers the given type in the component map, or {@code null} for types that are
+     * never registered as named components (simple types, containers, void, internal
+     * framework types).
+     *
+     * <p>Callers should use this name for both {@link #hasSchema(String)} checks and any
+     * {@code $ref} they construct, so that references resolve consistently regardless of the
+     * order in which types are encountered. The returned (enclosing-chain qualified) name is
+     * collapsed to the final display name via {@link #getSchemaNameReplacements()}.</p>
+     *
+     * @param javaType the Java type to resolve a component name for
+     * @return the canonical internal component name, or {@code null} if the type is not a named component
+     */
+    public String getComponentName(Type javaType) {
+        Class<?> rawClass = getRawClass(javaType);
+        if (rawClass == null || rawClass == Void.class || rawClass == void.class) {
+            return null;
+        }
+        if (trySimpleTypeSchema(rawClass) != null) {
+            return null;
+        }
+        if (Optional.class.isAssignableFrom(rawClass)
+                || rawClass.isArray()
+                || Collection.class.isAssignableFrom(rawClass)
+                || Map.class.isAssignableFrom(rawClass)) {
+            return null;
+        }
+
+        String typeName;
+        if (javaType instanceof java.lang.reflect.ParameterizedType parameterizedType
+                && !Collection.class.isAssignableFrom(rawClass)
+                && !Map.class.isAssignableFrom(rawClass)) {
+            typeName = getSpecializedTypeName(rawClass, parameterizedType);
+        } else {
+            typeName = getTypeName(rawClass);
+        }
+
+        if (isInternalSchemaName(typeName)) {
+            return null;
+        }
+        return typeName;
+    }
+
+    /**
      * Generates an OpenAPI Schema for the given Java type.
      *
      * @param javaType the Java type to generate a schema for
@@ -464,7 +508,7 @@ public class SchemaGenerator {
      * generating their schemas first so they are available during victools processing.
      */
     private void preGeneratePolymorphicFields(Class<?> rawClass) {
-        preGeneratePolymorphicFieldsRecursive(rawClass, new HashSet<>());
+        preGeneratePolymorphicFieldsRecursive(rawClass, new LinkedHashSet<>());
     }
 
     private void preGeneratePolymorphicFieldsRecursive(Class<?> rawClass, Set<Class<?>> visited) {
@@ -484,7 +528,7 @@ public class SchemaGenerator {
     }
 
     private void preGenerateFieldType(Class<?> fieldType, java.lang.reflect.Type genericType) {
-        preGenerateFieldType(fieldType, genericType, new HashSet<>());
+        preGenerateFieldType(fieldType, genericType, new LinkedHashSet<>());
     }
 
     private void preGenerateFieldType(Class<?> fieldType, java.lang.reflect.Type genericType, Set<Class<?>> visited) {
@@ -1326,7 +1370,7 @@ public class SchemaGenerator {
     private void enrichRequiredFields(Class<?> rawClass, ObjectSchema schema) {
         if (schema.getProperties() == null) return;
         Set<String> existingRequired = schema.getRequired() != null
-                ? new HashSet<>(schema.getRequired()) : new HashSet<>();
+                ? new LinkedHashSet<>(schema.getRequired()) : new LinkedHashSet<>();
         List<String> toAdd = new ArrayList<>();
 
         // Check record components
@@ -1576,7 +1620,7 @@ public class SchemaGenerator {
     private Schema<?> convertJsonSchemaToOpenApi(ObjectNode jsonSchema, String rootTypeName) {
         // Extract definitions first (they may be under $defs in draft 2020-12)
         JsonNode defs = getDefinitions(jsonSchema);
-        Set<String> rootAliases = new HashSet<>();
+        Set<String> rootAliases = new LinkedHashSet<>();
         JsonNode rootSchema = resolveRootSchemaNode(jsonSchema, defs, rootAliases);
         rootAliases.forEach(alias -> schemaNameAliases.put(alias, rootTypeName));
 
@@ -1693,7 +1737,7 @@ public class SchemaGenerator {
 
     private JsonNode resolveRootSchemaNode(JsonNode jsonSchema, JsonNode defs, Set<String> rootAliases) {
         JsonNode current = jsonSchema;
-        Set<String> visitedRefs = new HashSet<>();
+        Set<String> visitedRefs = new LinkedHashSet<>();
 
         while (current != null && current.has("$ref")) {
             String refName = extractRawRefName(current.get("$ref").asText());
@@ -2363,7 +2407,7 @@ public class SchemaGenerator {
         lastSchemaNameReplacements.clear();
         for (String key : combined.keySet()) {
             String resolved = key;
-            Set<String> seen = new HashSet<>();
+            Set<String> seen = new LinkedHashSet<>();
             while (combined.containsKey(resolved) && seen.add(resolved)) {
                 resolved = combined.get(resolved);
             }
@@ -2465,7 +2509,7 @@ public class SchemaGenerator {
      */
     private Map<String, String> collapseToMinimalNames(Map<String, Schema<?>> schemas) {
         // Count how many class-backed component keys map to each simple name.
-        Map<String, Integer> simpleCounts = new HashMap<>();
+        Map<String, Integer> simpleCounts = new LinkedHashMap<>();
         for (String key : schemas.keySet()) {
             Class<?> cls = classRegistry.get(key);
             if (cls == null) continue;
@@ -2510,7 +2554,7 @@ public class SchemaGenerator {
      */
     private void repairDanglingNumberedRefs(Map<String, Schema<?>> schemas, Map<String, String> collapseReplacements) {
         Set<String> present = schemas.keySet();
-        Set<String> targets = new HashSet<>();
+        Set<String> targets = new LinkedHashSet<>();
         for (Schema<?> schema : schemas.values()) {
             collectRefTargets(schema, targets);
         }
@@ -2548,7 +2592,7 @@ public class SchemaGenerator {
      */
     private void collapseRedundantUnions(Map<String, Schema<?>> schemas) {
         // Map each discriminated parent's exact subtype-ref set to the parent's name.
-        Map<Set<String>, String> parentBySubtypes = new HashMap<>();
+        Map<Set<String>, String> parentBySubtypes = new LinkedHashMap<>();
         for (Map.Entry<String, Schema<?>> entry : schemas.entrySet()) {
             Schema<?> schema = entry.getValue();
             if (schema.getDiscriminator() != null && schema.getOneOf() != null) {
@@ -2634,7 +2678,7 @@ public class SchemaGenerator {
      */
     private Set<String> pureRefTargets(List<Schema> branches) {
         String prefix = "#/components/schemas/";
-        Set<String> targets = new HashSet<>();
+        Set<String> targets = new LinkedHashSet<>();
         for (Schema<?> branch : branches) {
             if (branch == null || branch.get$ref() == null || !branch.get$ref().startsWith(prefix)) {
                 return null;

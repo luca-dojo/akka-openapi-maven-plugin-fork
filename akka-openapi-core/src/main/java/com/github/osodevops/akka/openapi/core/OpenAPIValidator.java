@@ -129,7 +129,7 @@ public class OpenAPIValidator {
             return;
         }
 
-        Set<String> seenOperationIds = new HashSet<>();
+        Set<String> seenOperationIds = new LinkedHashSet<>();
 
         for (Map.Entry<String, PathItem> pathEntry : openAPI.getPaths().entrySet()) {
             String path = pathEntry.getKey();
@@ -195,7 +195,7 @@ public class OpenAPIValidator {
     }
 
     private Set<String> collectSchemaReferences(OpenAPI openAPI) {
-        Set<String> refs = new HashSet<>();
+        Set<String> refs = new LinkedHashSet<>();
 
         // Serialize to YAML and scan for $refs
         try {
