@@ -48,7 +48,6 @@ public class SchemaGenerator {
     private final ObjectMapper objectMapper;
     private final Map<String, Schema<?>> generatedSchemas;
     private final Map<String, String> schemaNameAliases;
-    private final Map<String, String> subtypeToParentMap;
     private final Consumer<String> logger;
     private final Set<String> processingTypes;
     /** Registry mapping internal schema name → Class<?> for enrichRequiredFields post-processing on defs. */
@@ -79,7 +78,6 @@ public class SchemaGenerator {
         this.objectMapper = new ObjectMapper();
         this.generatedSchemas = new ConcurrentHashMap<>();
         this.schemaNameAliases = new ConcurrentHashMap<>();
-        this.subtypeToParentMap = new ConcurrentHashMap<>();
         this.processingTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
         this.classRegistry = new ConcurrentHashMap<>();
         this.resolvedSchemaNames = new ConcurrentHashMap<>();
@@ -597,7 +595,7 @@ public class SchemaGenerator {
             registerClassHierarchy(rawClass);
 
             // Pre-scan fields for polymorphic types and generate those first,
-            // so that subtypeToParentMap is populated before victools processes this type.
+            // so their discriminated parent schemas exist before victools processes this type.
             preGeneratePolymorphicFields(rawClass);
 
             // Generate JSON Schema using victools
@@ -746,8 +744,6 @@ public class SchemaGenerator {
 
         for (PolymorphicSubtype subType : subTypes) {
             String subTypeName = getTypeName(subType.subClass());
-            // Register subtype→parent mapping for ref resolution
-            subtypeToParentMap.put(subTypeName, typeName);
             Schema<?> subSchema = generatedSchemas.get(subTypeName);
             if (subSchema == null) {
                 subSchema = generateSubtypeSchema(
@@ -1815,12 +1811,6 @@ public class SchemaGenerator {
                     }
                     return mapSchema;
                 }
-                // If refName is a subtype of a polymorphic parent, and we're not
-                // currently building that parent's schema, redirect to the parent.
-                String parentType = subtypeToParentMap.get(refName);
-                if (parentType != null && !parentType.equals(currentTypeName)) {
-                    return createReference(parentType);
-                }
                 // Suppress refs to internal framework types — treat as opaque object
                 if (isInternalSchemaName(refName)) {
                     logger.accept("Suppressing $ref to internal framework type: " + refName);
@@ -2340,9 +2330,7 @@ public class SchemaGenerator {
                 String baseName = stripNumericSuffix(name);
                 if (baseName != null && result.containsKey(baseName)) {
                     toRemove.add(name);
-                    // If base name is itself a subtype, redirect to parent
-                    String parent = subtypeToParentMap.get(baseName);
-                    replacements.put(name, parent != null ? parent : baseName);
+                    replacements.put(name, baseName);
                 }
             }
         }
@@ -2769,7 +2757,7 @@ public class SchemaGenerator {
     public void clearSchemas() {
         generatedSchemas.clear();
         schemaNameAliases.clear();
-        subtypeToParentMap.clear();
+        classesPerSimpleName.clear();
         resolvedSchemaNames.clear();
         lastSchemaNameReplacements.clear();
     }
